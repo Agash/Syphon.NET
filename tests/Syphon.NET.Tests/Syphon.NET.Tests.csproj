@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+    <IsPackable>false</IsPackable>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- CA1515: test types do not need to be internal -->
+    <NoWarn>CA1515</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Testing.Platform.MSBuild" />
+    <PackageReference Include="MSTest.TestAdapter" />
+    <PackageReference Include="MSTest.TestFramework" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Syphon.NET\Syphon.NET.csproj" />
+  </ItemGroup>
+
+  <!-- Copy the native shim next to the test output so [LibraryImport] resolves it on macOS. -->
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\native\build\libsyphon_shim.dylib')">
+    <None Include="..\..\native\build\libsyphon_shim.dylib"
+          CopyToOutputDirectory="PreserveNewest">
+      <Link>libsyphon_shim.dylib</Link>
+    </None>
+    <None Include="..\..\native\build\default.metallib"
+          CopyToOutputDirectory="PreserveNewest">
+      <Link>default.metallib</Link>
+    </None>
+  </ItemGroup>
+</Project>

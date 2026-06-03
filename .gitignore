@@ -1,0 +1,20 @@
+## .NET
+bin/
+obj/
+*.user
+.vs/
+*.suo
+*.userosscache
+*.sln.docstates
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## NuGet
+*.nupkg
+*.snupkg
+nuget/
+
+## Native build artifacts (do not commit framework binaries)
+native/osx-arm64/Syphon.framework/
+native/osx-x64/Syphon.framework/

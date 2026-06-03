@@ -1,0 +1,12 @@
+# Normalise text in the repository to LF.
+* text=auto
+
+# Native build script and sources must stay LF so they run on macOS CI.
+*.sh  text eol=lf
+*.m   text eol=lf
+*.h   text eol=lf
+*.c   text eol=lf
+
+# Windows scripts stay CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf

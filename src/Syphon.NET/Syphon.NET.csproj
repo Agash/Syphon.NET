@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- net11.0 requires the .NET 11 preview SDK. global.json (rollForward latestMajor,
+         allowPrerelease) selects it when installed; CI installs it explicitly. -->
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+    <AssemblyName>Syphon.NET</AssemblyName>
+    <RootNamespace>Syphon.NET</RootNamespace>
+    <PackageId>Syphon.NET</PackageId>
+    <Description>.NET bindings for the Syphon framework on macOS. Publish and receive video frames between applications zero-copy over IOSurface-backed Metal textures - the shared-texture mechanism used by OBS, Resolume, TouchDesigner, and other real-time graphics tools. NativeAOT friendly.</Description>
+    <PackageTags>syphon;macos;gpu;texture;sharing;iosurface;metal;obs;video;capture;interop;dotnet;nativeaot</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <MinVerTagPrefix>v</MinVerTagPrefix>
+    <IsPackable>true</IsPackable>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <NoWarn>CA1515;CA1050</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="DotNet.ReproducibleBuilds" PrivateAssets="all" />
+    <PackageReference Include="MinVer" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="" />
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+  <!-- Universal (arm64 + x86_64) native shim, built by native/build-native.sh on macOS.
+       Packaged under the architecture-neutral osx RID; absent on non-macOS build hosts. -->
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\native\build\libsyphon_shim.dylib')">
+    <None Include="..\..\native\build\libsyphon_shim.dylib"
+          Pack="true"
+          PackagePath="runtimes/osx/native/"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest">
+      <Link>libsyphon_shim.dylib</Link>
+    </None>
+    <None Include="..\..\native\build\default.metallib"
+          Pack="true"
+          PackagePath="runtimes/osx/native/"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest">
+      <Link>default.metallib</Link>
+    </None>
+  </ItemGroup>
+</Project>

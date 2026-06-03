@@ -1,0 +1,153 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+env:
+  NuGetDirectory: ${{ github.workspace }}/nuget
+
+jobs:
+  build_and_test:
+    name: Build, Test, and Pack
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0        # MinVer needs full history
+          submodules: recursive # Syphon framework source for the native shim
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          # net11.0 needs the .NET 11 preview SDK alongside .NET 10; global.json selects it.
+          dotnet-version: |
+            10.0.x
+            11.0.x
+
+      - name: Build native shim (universal arm64 + x86_64)
+        run: bash native/build-native.sh
+
+      - name: Restore
+        run: dotnet restore Syphon.NET.slnx
+
+      - name: Build
+        run: dotnet build Syphon.NET.slnx --no-restore -c Release
+
+      - name: Test (value-type)
+        run: dotnet test Syphon.NET.slnx --no-build -c Release
+             --filter "TestCategory!=Transport&TestCategory!=Directory"
+
+      - name: Test (frame transport, byte-exact)
+        # Gating: a server publishes and a loopback client receives byte-exact, with no dependency
+        # on the distributed-notification directory. This works on headless runners with a Metal
+        # device and is the authoritative end-to-end read+write check.
+        run: dotnet test Syphon.NET.slnx --no-build -c Release
+             --filter "TestCategory=Transport"
+
+      - name: Test (directory discovery)
+        # Gating: discovery works on any Metal-capable host (incl. headless CI) once the run loop
+        # is pumped via SyphonServerDirectory.PumpEvents.
+        run: dotnet test Syphon.NET.slnx --no-build -c Release
+             --filter "TestCategory=Directory"
+
+      - name: Native probe (Metal + loopback transport + directory)
+        # Diagnostic: prints which layers actually work on the runner (Metal device,
+        # byte-exact frame transport via the loopback client, distributed-notification directory).
+        # Non-gating while we learn what a headless runner supports.
+        continue-on-error: true
+        run: dotnet run --project samples/Syphon.NET.Peer -c Release --no-build
+
+      - name: Cross-process transport (separate processes)
+        # Gating: spawns a separate server process and connects via its exported description (no
+        # directory), proving frames cross the real mach/IOSurface boundary byte-exact.
+        run: dotnet run --project samples/Syphon.NET.Peer -c Release --no-build -- crosstest
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"   # syphon-python ships wheels for cp38-cp312 only
+
+      - name: Install syphon-python (independent foreign peer)
+        run: |
+          python3 -m venv /tmp/sp
+          /tmp/sp/bin/pip install --quiet --upgrade pip
+          /tmp/sp/bin/pip install --quiet syphon-python numpy pyobjc-framework-Cocoa
+
+      - name: Foreign interop A (syphon-python server -> Syphon.NET client)
+        # Gating: an independent Syphon implementation publishes; we discover it via the directory
+        # and receive its frames byte-exact. This is the real cross-implementation receive case.
+        run: |
+          /tmp/sp/bin/python tests/interop/syphon_peer.py server --name PyForeign --w 64 --h 64 --seconds 45 &
+          PY=$!
+          sleep 4
+          dotnet run --project samples/Syphon.NET.Peer -c Release --no-build -- foreign-client --name PyForeign --timeout 25
+          RC=$?
+          kill $PY 2>/dev/null || true
+          exit $RC
+
+      - name: Foreign interop B (Syphon.NET server -> syphon-python client)
+        # Gating: a foreign client receives our published frames byte-exact. Connects via our
+        # exported description (syphon-python's directory wrapper crashes on an iconless server).
+        run: |
+          dotnet run --project samples/Syphon.NET.Peer -c Release --no-build -- server --name DotNetForeign --w 64 --h 64 --seconds 45 --desc-file /tmp/dn_desc.bin --ready-file /tmp/dn_ready &
+          CS=$!
+          for i in $(seq 1 50); do [ -f /tmp/dn_ready ] && break; sleep 0.2; done
+          /tmp/sp/bin/python tests/interop/syphon_peer.py client --name DotNetForeign --desc-file /tmp/dn_desc.bin --w 64 --h 64 --timeout 25
+          RC=$?
+          kill $CS 2>/dev/null || true
+          exit $RC
+
+      - name: Pack
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        run: dotnet pack src/Syphon.NET/Syphon.NET.csproj --no-build -c Release -o ${{ env.NuGetDirectory }}
+
+      - name: Upload package artifact
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuget-package
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ env.NuGetDirectory }}/*.nupkg
+
+  publish_nuget:
+    name: Publish NuGet Packages
+    needs: [build_and_test]
+    # Publishing runs only when a GitHub release is published (or manually dispatched), matching
+    # the other Agash packages. Requires a NuGet.org trusted-publishing policy for this package.
+    if: (github.event_name == 'release' && github.event.action == 'published') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest   # the package is platform-agnostic; no macOS needed to push it
+    permissions:
+      contents: read
+      id-token: write   # OIDC for NuGet.org trusted publishing
+
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: nuget-package
+          path: ${{ env.NuGetDirectory }}
+
+      - uses: actions/setup-dotnet@v5
+
+      - name: NuGet login (OIDC)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: Agash
+
+      - name: Publish packages
+        run: |
+          for f in "${{ env.NuGetDirectory }}"/*.nupkg; do
+            echo "Pushing $f"
+            dotnet nuget push "$f" \
+              --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done
