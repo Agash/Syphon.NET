@@ -18,3 +18,4 @@ nuget/
 ## Native build artifacts (do not commit framework binaries)
 native/osx-arm64/Syphon.framework/
 native/osx-x64/Syphon.framework/
+native/build/

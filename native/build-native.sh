@@ -42,6 +42,7 @@ clang \
   -fvisibility=hidden \
   -O2 \
   -Wno-deprecated-declarations \
+  -Wno-c23-extensions \
   -include "$SCRIPT_DIR/include/shim_prefix.h" \
   -include "$VENDOR/Syphon_Prefix.pch" \
   -I"$BUILD/headers" \

@@ -73,4 +73,16 @@ internal static partial class SyphonNative
 
     [LibraryImport(Lib)]
     internal static partial nint sy_client_copy_new_frame(nint client);
+
+    // ---- Surface effect (general GPU fragment-shader pass over IOSurfaces) ----
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial nint sy_effect_create(string mslSource, string fragmentFunction);
+
+    [LibraryImport(Lib)]
+    internal static partial void sy_effect_destroy(nint effect);
+
+    [LibraryImport(Lib)]
+    internal static partial nint sy_effect_render(nint effect, uint outWidth, uint outHeight,
+        [In] nint[] inSurfaces, [In] uint[] inPlanes, [In] uint[] inFormats, int count);
 }

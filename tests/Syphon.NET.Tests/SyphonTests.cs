@@ -152,6 +152,111 @@ public sealed class SyphonTransportTests
 }
 
 /// <summary>
+/// The general-purpose <see cref="SurfaceEffect"/> GPU helper. Gating wherever a Metal device is
+/// present (including headless CI); Inconclusive only without Metal or the native library.
+/// </summary>
+[TestClass]
+public sealed class SurfaceEffectTests
+{
+    // A trivial copy shader: sampling a 1:1 BGRA input at pixel centres returns the exact texels.
+    private const string CopyShader =
+        "fragment float4 copy(VOut in [[stage_in]], texture2d<float> src [[texture(0)]]) {\n" +
+        "    return src.sample(sy_samp, in.uv);\n" +
+        "}\n";
+
+    [TestMethod]
+    [TestCategory("Transport")]
+    public void Effect_CopiesBgraInputByteExact()
+    {
+        const int w = 48, h = 32;
+        SyphonServer server = null!;
+        SurfaceEffect effect = null!;
+        try
+        {
+            server = new SyphonServer("Syphon.NET Effect Test");
+            effect = new SurfaceEffect(CopyShader, "copy");
+        }
+        catch (DllNotFoundException)
+        {
+            Assert.Inconclusive("Native Syphon shim not present on this host.");
+        }
+        catch (PlatformNotSupportedException)
+        {
+            Assert.Inconclusive("No Metal device available on this host.");
+        }
+
+        using (server)
+        using (effect)
+        {
+            // Fill a server-owned BGRA surface with a known pattern as the effect input.
+            IOSurface input = server.AcquireSurface(w, h, SyphonPixelFormat.Bgra);
+            byte[] pattern = Pattern(w, h);
+            WriteRows(input, pattern, w, h);
+
+            IOSurface output = effect.Render(w, h, [new SurfaceInput(input, MetalPixelFormat.Bgra8Unorm)]);
+            Assert.AreEqual(w, output.Width);
+            Assert.AreEqual(h, output.Height);
+
+            byte[] got = ReadRows(output, w, h);
+            CollectionAssert.AreEqual(pattern, got, "a copy effect must reproduce the input byte-exact");
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Transport")]
+    public void Effect_InvalidShader_Throws()
+    {
+        try
+        {
+            using var _ = new SurfaceEffect("not valid metal", "nope");
+        }
+        catch (DllNotFoundException)
+        {
+            Assert.Inconclusive("Native Syphon shim not present on this host.");
+            return;
+        }
+        catch (PlatformNotSupportedException)
+        {
+            Assert.Inconclusive("No Metal device available on this host.");
+            return;
+        }
+        catch (InvalidOperationException)
+        {
+            return; // expected: the shader does not compile
+        }
+
+        Assert.Fail("an uncompilable shader should throw InvalidOperationException");
+    }
+
+    private static byte[] Pattern(int w, int h)
+    {
+        byte[] p = new byte[w * h * 4];
+        for (int i = 0; i < p.Length; i++) p[i] = (byte)(i * 7 + 3);
+        return p;
+    }
+
+    private static void WriteRows(IOSurface surface, byte[] tight, int w, int h)
+    {
+        int stride = surface.BytesPerRow;
+        using IOSurface.Lock locked = surface.LockBytes(readOnly: false);
+        Span<byte> bytes = locked.Bytes;
+        for (int y = 0; y < h; y++)
+            tight.AsSpan(y * w * 4, w * 4).CopyTo(bytes.Slice(y * stride, w * 4));
+    }
+
+    private static byte[] ReadRows(IOSurface surface, int w, int h)
+    {
+        int stride = surface.BytesPerRow;
+        byte[] tight = new byte[w * h * 4];
+        using IOSurface.Lock locked = surface.LockBytes(readOnly: true);
+        Span<byte> bytes = locked.Bytes;
+        for (int y = 0; y < h; y++)
+            bytes.Slice(y * stride, w * 4).CopyTo(tight.AsSpan(y * w * 4, w * 4));
+        return tight;
+    }
+}
+
+/// <summary>
 /// Directory discovery uses NSDistributedNotificationCenter, which needs a Cocoa run loop to be
 /// pumped. With <see cref="SyphonServerDirectory.PumpEvents"/> it works anywhere a Metal device is
 /// present - including headless CI - so these are gating. They report Inconclusive only when there

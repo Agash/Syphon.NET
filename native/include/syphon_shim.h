@@ -121,6 +121,51 @@ SY_EXPORT int sy_client_is_valid(sy_client client);
 // CFRelease via the managed IOSurface wrapper), or 0 if no new frame is available.
 SY_EXPORT sy_iosurface sy_client_copy_new_frame(sy_client client);
 
+// ---- Surface effect: GPU helper to run a fragment shader over IOSurfaces ---
+//
+// HELPER (not part of the Syphon protocol). A general-purpose Metal image pass for callers that
+// need to transform a surface on the GPU before publishing or after receiving - for example to
+// colour-convert, or to fold/unfold an alpha channel for transport through an opaque video codec.
+// The caller supplies the Metal fragment shader and describes the inputs, so this stays agnostic
+// of any particular transform; the transform's pixel layout/colour maths lives in the caller.
+//
+// It runs on the shim's shared MTLDevice, sampling input IOSurface planes as textures and
+// rendering a full-screen triangle into a reused BGRA output IOSurface - zero-copy, no CPU
+// readback. The shim provides the vertex stage; the caller's fragment source is compiled against
+// this preamble (so a fragment may use the `VOut` stage-in struct and the `sy_samp` sampler):
+//
+//     #include <metal_stdlib>
+//     using namespace metal;
+//     struct VOut { float4 pos [[position]]; float2 uv; };       // uv in [0,1]
+//     vertex VOut sy_fullscreen_vs(uint vid [[vertex_id]]);      // built in
+//     constexpr sampler sy_samp(coord::normalized, address::clamp_to_edge, filter::linear);
+
+typedef void* sy_effect;
+
+// MTLPixelFormat raw values for the input planes a caller may bind (the formats IOSurface-backed
+// textures use here): 8-bit BGRA, single-channel R8, two-channel RG8 (e.g. an NV12 CbCr plane).
+#define SY_PIXELFORMAT_R8     10
+#define SY_PIXELFORMAT_RG8    30
+#define SY_PIXELFORMAT_BGRA8  80
+
+// Compile `fragment_function` from `msl_source` (appended to the preamble above) into a render
+// pipeline. Returns NULL on compile/link failure or if Metal is unavailable.
+SY_EXPORT sy_effect sy_effect_create(const char* msl_source, const char* fragment_function);
+
+// Release the effect and its reused output surface.
+SY_EXPORT void sy_effect_destroy(sy_effect e);
+
+// Render the effect into a BGRA output surface of out_width x out_height (owned by `e`, recreated
+// on a size change, valid until the next sy_effect_render or sy_effect_destroy). Binds `count`
+// inputs at fragment texture indices 0..count-1: input i samples plane in_planes[i] of
+// in_surfaces[i] as an in_formats[i] (SY_PIXELFORMAT_*) texture. Returns 0 on failure.
+SY_EXPORT sy_iosurface sy_effect_render(sy_effect e,
+                                        uint32_t out_width, uint32_t out_height,
+                                        const sy_iosurface* in_surfaces,
+                                        const uint32_t* in_planes,
+                                        const uint32_t* in_formats,
+                                        int count);
+
 #ifdef __cplusplus
 }
 #endif

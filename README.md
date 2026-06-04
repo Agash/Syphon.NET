@@ -59,6 +59,30 @@ if (frame is not null)
 Each frame is backed by an `IOSurface` (`frame.Surface.Handle`), so you can read it on the CPU as
 shown or hand it straight to VideoToolbox for a zero-copy hardware encode.
 
+## Transform surfaces on the GPU (`SurfaceEffect`)
+
+`SurfaceEffect` is a small general-purpose helper (not part of the Syphon protocol) for running a
+Metal fragment shader over one or more input `IOSurface` planes into a BGRA output surface — useful
+for colour conversion or channel folding before publishing or after receiving, all zero-copy on the
+same shared Metal device. You supply the shader; it provides the full-screen vertex stage, the
+stage-in struct `VOut { float4 pos; float2 uv; }` (with `uv` in `[0,1]`), and a linear clamped
+sampler `sy_samp`.
+
+```csharp
+using Syphon.NET;
+
+using var effect = new SurfaceEffect(
+    "fragment float4 invert(VOut in [[stage_in]], texture2d<float> src [[texture(0)]]) {\n" +
+    "    float4 c = src.sample(sy_samp, in.uv); return float4(1.0 - c.rgb, c.a);\n" +
+    "}\n", "invert");
+
+// Returns a view over an effect-owned surface, valid until the next Render call.
+IOSurface output = effect.Render(width, height, [new SurfaceInput(input, MetalPixelFormat.Bgra8Unorm)]);
+```
+
+Multiple inputs bind at fragment texture indices `0..n-1`, and an input can view a specific plane of
+a planar surface (e.g. an NV12 luma plane as `R8Unorm` and the CbCr plane as `Rg8Unorm`).
+
 ## Building from source
 
 ```sh

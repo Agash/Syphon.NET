@@ -379,3 +379,122 @@ sy_iosurface sy_client_copy_new_frame(sy_client client)
     CFRetain(surf); // keep alive after the texture is released; managed side CFReleases
     return (sy_iosurface)surf;
 }
+
+// ---- Surface effect (general GPU fragment-shader pass over IOSurfaces) -----
+
+#define SY_MAX_EFFECT_INPUTS 4
+
+// Built-in preamble prepended to every caller fragment source: the full-screen-triangle vertex
+// stage, the VOut stage-in struct, and a linear clamped sampler. The source lives in an editable
+// .metal file (native/shaders/sy_fullscreen.metal) and is embedded here at build time.
+static const char kEffectPreambleBytes[] = {
+#embed "../shaders/sy_fullscreen.metal"
+    , 0
+};
+
+typedef struct sy_effect_t {
+    id<MTLRenderPipelineState> pipeline;
+    IOSurfaceRef               out;
+    id<MTLTexture>             outTex;
+    uint32_t                   outW, outH;
+} sy_effect_t;
+
+static id<MTLTexture> texture_from_iosurface_plane(IOSurfaceRef surface, MTLPixelFormat fmt, NSUInteger plane)
+{
+    if (surface == NULL) { return nil; }
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:fmt
+                                     width:IOSurfaceGetWidthOfPlane(surface, plane)
+                                    height:IOSurfaceGetHeightOfPlane(surface, plane)
+                                 mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead;
+    desc.storageMode = MTLStorageModeShared;
+    return [g_device newTextureWithDescriptor:desc iosurface:surface plane:plane];
+}
+
+sy_effect sy_effect_create(const char* msl_source, const char* fragment_function)
+{
+    if (msl_source == NULL || fragment_function == NULL) { return NULL; }
+    if (sy_init() != 0) { return NULL; }
+
+    NSString* preamble = [NSString stringWithUTF8String:kEffectPreambleBytes];
+    NSString* source = [preamble stringByAppendingString:[NSString stringWithUTF8String:msl_source]];
+    NSError* error = nil;
+    id<MTLLibrary> lib = [g_device newLibraryWithSource:source options:nil error:&error];
+    if (lib == nil) { return NULL; }
+
+    id<MTLFunction> vfn = [lib newFunctionWithName:@"sy_fullscreen_vs"];
+    id<MTLFunction> ffn = [lib newFunctionWithName:[NSString stringWithUTF8String:fragment_function]];
+    if (vfn == nil || ffn == nil) { return NULL; }
+
+    MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = vfn;
+    desc.fragmentFunction = ffn;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    id<MTLRenderPipelineState> pso = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (pso == nil) { return NULL; }
+
+    sy_effect_t* e = calloc(1, sizeof(sy_effect_t));
+    e->pipeline = pso;
+    return e;
+}
+
+void sy_effect_destroy(sy_effect effect)
+{
+    if (effect == NULL) { return; }
+    sy_effect_t* e = (sy_effect_t*)effect;
+    e->pipeline = nil;
+    e->outTex = nil;
+    if (e->out) { CFRelease(e->out); e->out = NULL; }
+    free(e);
+}
+
+sy_iosurface sy_effect_render(sy_effect effect,
+                              uint32_t out_width, uint32_t out_height,
+                              const sy_iosurface* in_surfaces,
+                              const uint32_t* in_planes,
+                              const uint32_t* in_formats,
+                              int count)
+{
+    if (effect == NULL || out_width == 0 || out_height == 0) { return 0; }
+    if (count <= 0 || count > SY_MAX_EFFECT_INPUTS || in_surfaces == NULL || in_planes == NULL || in_formats == NULL) { return 0; }
+    sy_effect_t* e = (sy_effect_t*)effect;
+
+    // Reused BGRA output surface, recreated on a size change.
+    if (e->out == NULL || e->outW != out_width || e->outH != out_height)
+    {
+        e->outTex = nil;
+        if (e->out) { CFRelease(e->out); e->out = NULL; }
+        e->out = create_iosurface(out_width, out_height, 'BGRA');
+        if (e->out == NULL) { return 0; }
+        e->outTex = texture_from_iosurface(e->out, MTLPixelFormatBGRA8Unorm);
+        if (e->outTex == nil) { CFRelease(e->out); e->out = NULL; return 0; }
+        e->outW = out_width; e->outH = out_height;
+    }
+
+    id<MTLTexture> inputs[SY_MAX_EFFECT_INPUTS] = { nil, nil, nil, nil };
+    for (int i = 0; i < count; i++)
+    {
+        if (in_surfaces[i] == 0) { return 0; }
+        inputs[i] = texture_from_iosurface_plane((IOSurfaceRef)in_surfaces[i],
+                                                 (MTLPixelFormat)in_formats[i],
+                                                 (NSUInteger)in_planes[i]);
+        if (inputs[i] == nil) { return 0; }
+    }
+
+    id<MTLCommandBuffer> cmd = [g_queue commandBuffer];
+    MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = e->outTex;
+    rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;  // every pixel is written
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+    id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:rp];
+    [enc setRenderPipelineState:e->pipeline];
+    for (int i = 0; i < count; i++) { [enc setFragmentTexture:inputs[i] atIndex:(NSUInteger)i]; }
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
+    [cmd commit];
+    [cmd waitUntilCompleted];  // result surface must be ready for the encoder/publisher
+
+    return cmd.status == MTLCommandBufferStatusCompleted ? (sy_iosurface)e->out : 0;
+}
