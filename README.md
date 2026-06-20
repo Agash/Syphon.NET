@@ -8,7 +8,7 @@ and other tools that speak Syphon.
 ## Requirements
 
 - macOS on Apple Silicon or Intel, with a Metal-capable GPU.
-- .NET 10 (or .NET 11).
+- .NET 11 (the library targets `net11.0-macos` and uses Microsoft's macOS framework bindings).
 
 ## Install
 
@@ -47,41 +47,47 @@ directory.PumpEvents(TimeSpan.FromMilliseconds(200));
 
 using var client = directory.CreateClient(index: 0);
 
-using SyphonFrame? frame = client.TryGetFrame();
+// Frames are Microsoft's IOSurface binding directly - dispose when done (it releases the retain).
+using IOSurface.IOSurface? frame = client.TryGetFrame();
 if (frame is not null)
 {
-    int w = frame.Surface.Width, h = frame.Surface.Height;
+    (int w, int h) = frame.PixelSize();
     byte[] pixels = new byte[w * h * 4];
-    frame.CopyTo(pixels);
+    frame.CopyTightlyPacked(pixels);
 }
 ```
 
-Each frame is backed by an `IOSurface` (`frame.Surface.Handle`), so you can read it on the CPU as
-shown or hand it straight to VideoToolbox for a zero-copy hardware encode.
+Each frame is the shared `IOSurface` itself (`frame.Handle`), so you can read it on the CPU as shown
+or hand it straight to VideoToolbox for a zero-copy hardware encode.
 
-## Transform surfaces on the GPU (`SurfaceEffect`)
+## Working with surfaces (`IOSurfaceExtensions`)
 
-`SurfaceEffect` is a small general-purpose helper (not part of the Syphon protocol) for running a
-Metal fragment shader over one or more input `IOSurface` planes into a BGRA output surface — useful
-for colour conversion or channel folding before publishing or after receiving, all zero-copy on the
-same shared Metal device. You supply the shader; it provides the full-screen vertex stage, the
-stage-in struct `VOut { float4 pos; float2 uv; }` (with `uv` in `[0,1]`), and a linear clamped
-sampler `sy_samp`.
+Frames and the surface returned by `AcquireSurface` are the Microsoft
+[`IOSurface`](https://learn.microsoft.com/dotnet/api/iosurface.iosurface) binding directly - there is
+no wrapper type. `IOSurfaceExtensions` adds the ergonomics the binding doesn't surface:
 
 ```csharp
 using Syphon.NET;
 
-using var effect = new SurfaceEffect(
-    "fragment float4 invert(VOut in [[stage_in]], texture2d<float> src [[texture(0)]]) {\n" +
-    "    float4 c = src.sample(sy_samp, in.uv); return float4(1.0 - c.rgb, c.a);\n" +
-    "}\n", "invert");
+(int w, int h) = surface.PixelSize();          // int-typed dimensions
+bool bgra = surface.IsBgra();                   // format predicates (IsBgra / IsNv12)
+(int cw, int ch, int stride) = surface.PlaneInfo(1); // per-plane dims + row stride
 
-// Returns a view over an effect-owned surface, valid until the next Render call.
-IOSurface output = effect.Render(width, height, [new SurfaceInput(input, MetalPixelFormat.Bgra8Unorm)]);
+// Scoped CPU access yielding a Span; unlocks on dispose:
+using (var locked = surface.LockBytes(readOnly: true))
+{
+    ReadOnlySpan<byte> bytes = locked.Bytes;    // row-padded; stride is locked.BytesPerRow
+}
+
+surface.CopyTightlyPacked(destination);         // copy out, stride collapsed to width * 4
+surface.WritePixels(source);                    // copy tightly-packed rows in
+
+var output = IOSurfaceExtensions.CreateBgra(w, h); // make a surface to draw into and publish
 ```
 
-Multiple inputs bind at fragment texture indices `0..n-1`, and an input can view a specific plane of
-a planar surface (e.g. an NV12 luma plane as `R8Unorm` and the CbCr plane as `Rg8Unorm`).
+GPU transforms (colour conversion, channel folding) are the caller's job - drive Metal compute or
+render through your own `Microsoft.macOS` Metal bindings and publish the resulting surface with
+`server.Publish(surface)`.
 
 ## Building from source
 
@@ -93,8 +99,10 @@ dotnet build Syphon.NET.slnx
 dotnet test
 ```
 
-The native helper compiles the Syphon framework (a git submodule) and a small shim into one
-universal binary; the managed library is plain `net10.0` / `net11.0`.
+The native helper compiles the Syphon framework (a git submodule, built unmodified) and a small shim
+into one universal binary; the server announces IOSurfaces directly through `SyphonServerBase`, so no
+Metal renderer or shader library is involved. The managed library targets `net11.0-macos` and needs
+the .NET 11 SDK with the `macos` workload.
 
 ## License
 

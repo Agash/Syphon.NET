@@ -1,6 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+    <!-- The library binds Microsoft's macOS frameworks (IOSurface/CoreVideo/Metal), so it is
+         macOS-only; tests share that target. -->
+    <TargetFramework>net11.0-macos</TargetFramework>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <ApplicationId>net.syphon.tests</ApplicationId>
     <IsPackable>false</IsPackable>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -16,18 +20,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The native shim flows in transitively from the Syphon.NET project reference (it is copied to
+         output there); no need to re-declare it here. -->
     <ProjectReference Include="..\..\src\Syphon.NET\Syphon.NET.csproj" />
-  </ItemGroup>
-
-  <!-- Copy the native shim next to the test output so [LibraryImport] resolves it on macOS. -->
-  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\native\build\libsyphon_shim.dylib')">
-    <None Include="..\..\native\build\libsyphon_shim.dylib"
-          CopyToOutputDirectory="PreserveNewest">
-      <Link>libsyphon_shim.dylib</Link>
-    </None>
-    <None Include="..\..\native\build\default.metallib"
-          CopyToOutputDirectory="PreserveNewest">
-      <Link>default.metallib</Link>
-    </None>
   </ItemGroup>
 </Project>

@@ -12,9 +12,8 @@ dotnet build Syphon.NET.slnx
 dotnet test --filter "TestCategory!=RequiresMetal"
 ```
 
-The build treats warnings as errors and targets .NET 10 (and .NET 11 preview). If you do not
-have the .NET 11 preview SDK, the `net11.0` target framework will not build; install it or
-build the `net10.0` target only.
+The build treats warnings as errors and targets `net11.0-macos`, using Microsoft's macOS framework
+bindings. You need the .NET 11 SDK with the `macos` workload installed.
 
 ## Native helper
 

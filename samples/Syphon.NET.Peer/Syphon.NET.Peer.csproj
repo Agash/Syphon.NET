@@ -1,7 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- macOS-only: the library binds Microsoft's IOSurface/CoreVideo/Metal frameworks. -->
+    <TargetFramework>net11.0-macos</TargetFramework>
+    <!-- A -macos Exe gets a RID resolved at build (the app-bundle default is osx-x64); the slnx-level restore
+         does not pre-emit that RID asset target, so build hard-fails NETSDK1047 unless the candidate RIDs are
+         declared here. Listing both keeps restore RID-complete for arm64 and Intel runners alike. -->
+    <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <ApplicationId>net.syphon.peer</ApplicationId>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
@@ -11,18 +18,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The native shim (libsyphon_shim.dylib) flows in transitively from the Syphon.NET project
+         reference, which copies it to output/publish; re-declaring it here duplicates it into the
+         app bundle's MonoBundle and trips install_name_tool. -->
     <ProjectReference Include="..\..\src\Syphon.NET\Syphon.NET.csproj" />
-  </ItemGroup>
-
-  <!-- Copy the native shim next to the output so [LibraryImport] resolves it on macOS. -->
-  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\native\build\libsyphon_shim.dylib')">
-    <None Include="..\..\native\build\libsyphon_shim.dylib"
-          CopyToOutputDirectory="PreserveNewest">
-      <Link>libsyphon_shim.dylib</Link>
-    </None>
-    <None Include="..\..\native\build\default.metallib"
-          CopyToOutputDirectory="PreserveNewest">
-      <Link>default.metallib</Link>
-    </None>
   </ItemGroup>
 </Project>

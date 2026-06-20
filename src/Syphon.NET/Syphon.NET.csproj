@@ -1,8 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <!-- net11.0 requires the .NET 11 preview SDK. global.json (rollForward latestMajor,
-         allowPrerelease) selects it when installed; CI installs it explicitly. -->
-    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+    <!-- macOS-only library: the Syphon framework is macOS-only and the consumers run on the net*-macos head,
+         so target net11.0-macos directly (Microsoft Metal/CoreVideo/IOSurface bindings available; the ObjC
+         runtime matches the consuming app, avoiding base-TFM raw-P/Invoke/ObjC-runtime mismatches). Requires
+         the .NET 11 preview SDK + macos workload. -->
+    <TargetFramework>net11.0-macos</TargetFramework>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <!-- Experimental runtime async (matches the consuming StreamTransport tree) + AOT-compat analysers. -->
+    <Features>runtime-async=on</Features>
+    <IsAotCompatible>true</IsAotCompatible>
     <AssemblyName>Syphon.NET</AssemblyName>
     <RootNamespace>Syphon.NET</RootNamespace>
     <PackageId>Syphon.NET</PackageId>
@@ -22,6 +28,10 @@
   <ItemGroup>
     <PackageReference Include="DotNet.ReproducibleBuilds" PrivateAssets="all" />
     <PackageReference Include="MinVer" PrivateAssets="all" />
+    <!-- Microsoft.Extensions.Logging.Abstractions (ILogger / [LoggerMessage]) is implicitly available on the
+         net11.0-macos framework, so an explicit PackageReference trips NU1510 (warning-as-error); the types
+         resolve from the framework without it. -->
+
   </ItemGroup>
 
   <ItemGroup>
@@ -39,13 +49,6 @@
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest">
       <Link>libsyphon_shim.dylib</Link>
-    </None>
-    <None Include="..\..\native\build\default.metallib"
-          Pack="true"
-          PackagePath="runtimes/osx/native/"
-          CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest">
-      <Link>default.metallib</Link>
     </None>
   </ItemGroup>
 </Project>

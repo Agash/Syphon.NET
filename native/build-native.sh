@@ -21,6 +21,11 @@ if [[ ! -d "$VENDOR" ]]; then
   exit 1
 fi
 
+# The shim drives Syphon's renderer-free path (SyphonServerBase announces IOSurfaces by ID), so the
+# vendored framework is built unmodified - no patches. Reset the submodule working tree to pristine in
+# case an earlier revision left a patch applied.
+git -C "$VENDOR" checkout -- . 2>/dev/null || true
+
 mkdir -p "$BUILD"
 
 # The vendored Syphon headers import each other framework-style (#import <Syphon/Foo.h>).
@@ -63,11 +68,5 @@ clang \
 echo "built $OUT"
 lipo -info "$OUT"
 
-# Compile Syphon's Metal shaders into default.metallib, placed beside the dylib. The Metal
-# server renderer loads this via -[MTLDevice newDefaultLibraryWithBundle:] using the bundle of
-# the dylib that defines its class, i.e. this directory. Without it the render pipeline's
-# vertex function is nil and Metal asserts at server creation. metallib is arch-independent.
-xcrun -sdk macosx metal -O -mmacosx-version-min=11.0 \
-  -c "$VENDOR/SyphonMetalShaders.metal" -o "$BUILD/SyphonMetalShaders.air"
-xcrun -sdk macosx metallib "$BUILD/SyphonMetalShaders.air" -o "$BUILD/default.metallib"
-echo "built $BUILD/default.metallib"
+# No default.metallib is built: the renderer patch compiles Syphon's Metal shaders from source at runtime
+# (newLibraryWithSource), so there is no metallib/bundle dependency to ship or place.

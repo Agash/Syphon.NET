@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using CoreVideo;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Syphon.NET;
 
@@ -8,25 +9,6 @@ namespace Syphon.NET.Tests;
 [TestClass]
 public sealed class SyphonValueTypeTests
 {
-    [TestMethod]
-    public void PixelFormat_FourCcValues_MatchIOSurfaceCodes()
-    {
-        Assert.AreEqual((uint)SyphonPixelFormat.Bgra, FourCc("BGRA"));
-        Assert.AreEqual((uint)SyphonPixelFormat.Rgba, FourCc("RGBA"));
-    }
-
-    private static uint FourCc(string code) =>
-        (uint)((code[0] << 24) | (code[1] << 16) | (code[2] << 8) | code[3]);
-
-    [TestMethod]
-    public void IOSurface_Equality_ComparesHandles()
-    {
-        IOSurface a = default;
-        IOSurface b = default;
-        Assert.IsTrue(a == b);
-        Assert.IsFalse(a.IsValid);
-    }
-
     [TestMethod]
     public void ServerDescription_Equality_IsByValue()
     {
@@ -41,31 +23,26 @@ public sealed class SyphonValueTypeTests
 /// server description (no distributed-notification directory) receives it. These are gating - they
 /// run wherever a Metal device is present (including headless CI) and assert byte-exact delivery.
 /// They report Inconclusive only when there is no Metal device or native library at all.
+/// Surfaces are the Microsoft <see cref="IOSurface"/> bindings directly - the helpers come from
+/// <see cref="IOSurfaceExtensions"/>.
 /// </summary>
 [TestClass]
 public sealed class SyphonTransportTests
 {
     [TestMethod]
     [TestCategory("Transport")]
-    public void Bgra_64x64_RoundTripsByteExact() =>
-        AssertLoopback(SyphonPixelFormat.Bgra, 64, 64, swizzle: false);
+    public void Bgra_64x64_RoundTripsByteExact() => AssertLoopback(64, 64);
 
     [TestMethod]
     [TestCategory("Transport")]
-    public void Bgra_48x32_RoundTripsByteExact_WithRowPadding() =>
-        AssertLoopback(SyphonPixelFormat.Bgra, 48, 32, swizzle: false);
+    public void Bgra_48x32_RoundTripsByteExact_WithRowPadding() => AssertLoopback(48, 32);
 
-    [TestMethod]
-    [TestCategory("Transport")]
-    public void Rgba_48x32_IsColourConvertedToBgra() =>
-        AssertLoopback(SyphonPixelFormat.Rgba, 48, 32, swizzle: true);
-
-    private static void AssertLoopback(SyphonPixelFormat format, int w, int h, bool swizzle)
+    private static void AssertLoopback(int w, int h)
     {
         SyphonServer server = null!;
         try
         {
-            server = new SyphonServer($"Syphon.NET Test {format} {w}x{h}");
+            server = new SyphonServer($"Syphon.NET Test {w}x{h}");
         }
         catch (DllNotFoundException)
         {
@@ -78,37 +55,36 @@ public sealed class SyphonTransportTests
 
         using (server)
         {
-            byte[] src = Pattern(w, h);
-            byte[] expected = swizzle ? SwapRedBlue(src) : src;
+            byte[] expected = Pattern(w, h);
 
             using SyphonClient client = server.CreateLoopbackClient();
-            using SyphonFrame? frame = PollLatest(server, client, src, w, h, format);
+            using IOSurface.IOSurface? surface = PollLatest(server, client, expected, w, h);
 
-            Assert.IsNotNull(frame, "a published frame should be delivered to the loopback client");
-            Assert.AreEqual(w, frame.Surface.Width);
-            Assert.AreEqual(h, frame.Surface.Height);
-            Assert.AreEqual(SyphonPixelFormat.Bgra, frame.Surface.PixelFormat,
-                "Syphon delivers frames in its canonical BGRA surface format");
+            Assert.IsNotNull(surface, "a published frame should be delivered to the loopback client");
+            (int gotW, int gotH) = surface.PixelSize();
+            Assert.AreEqual(w, gotW);
+            Assert.AreEqual(h, gotH);
+            Assert.IsTrue(surface.IsBgra(), "Syphon delivers frames in its canonical BGRA surface format");
 
             byte[] got = new byte[w * h * 4];
-            frame.CopyTo(got);
-            CollectionAssert.AreEqual(expected, got, $"pixels must round-trip ({format} {w}x{h})");
+            surface.CopyTightlyPacked(got);
+            CollectionAssert.AreEqual(expected, got, $"pixels must round-trip ({w}x{h})");
         }
     }
 
-    private static SyphonFrame? PollLatest(
-        SyphonServer server, SyphonClient client, byte[] src, int w, int h, SyphonPixelFormat format)
+    private static IOSurface.IOSurface? PollLatest(
+        SyphonServer server, SyphonClient client, byte[] src, int w, int h)
     {
         // Publish repeatedly, keeping the most recent delivered frame and discarding an initial
         // stale one by requiring a few publishes before accepting.
-        SyphonFrame? frame = null;
+        IOSurface.IOSurface? frame = null;
         var sw = Stopwatch.StartNew();
         int published = 0;
         while (sw.Elapsed < TimeSpan.FromSeconds(5))
         {
-            server.PublishPixels(src, w, h, format);
+            server.PublishPixels(src, w, h, CVPixelFormatType.CV32BGRA);
             published++;
-            SyphonFrame? f = client.TryGetFrame();
+            IOSurface.IOSurface? f = client.TryGetFrame();
             if (f is not null)
             {
                 frame?.Dispose();
@@ -136,45 +112,25 @@ public sealed class SyphonTransportTests
         }
         return p;
     }
-
-    private static byte[] SwapRedBlue(byte[] rgba)
-    {
-        byte[] bgra = new byte[rgba.Length];
-        for (int i = 0; i < rgba.Length; i += 4)
-        {
-            bgra[i] = rgba[i + 2];
-            bgra[i + 1] = rgba[i + 1];
-            bgra[i + 2] = rgba[i];
-            bgra[i + 3] = rgba[i + 3];
-        }
-        return bgra;
-    }
 }
 
 /// <summary>
-/// The general-purpose <see cref="SurfaceEffect"/> GPU helper. Gating wherever a Metal device is
-/// present (including headless CI); Inconclusive only without Metal or the native library.
+/// Exercises <see cref="IOSurfaceExtensions"/> directly against a server-owned surface: write
+/// tightly-packed pixels in, read them back, and confirm format/plane predicates. Gating wherever a
+/// Metal device is present; Inconclusive only without Metal or the native library.
 /// </summary>
 [TestClass]
-public sealed class SurfaceEffectTests
+public sealed class IOSurfaceExtensionsTests
 {
-    // A trivial copy shader: sampling a 1:1 BGRA input at pixel centres returns the exact texels.
-    private const string CopyShader =
-        "fragment float4 copy(VOut in [[stage_in]], texture2d<float> src [[texture(0)]]) {\n" +
-        "    return src.sample(sy_samp, in.uv);\n" +
-        "}\n";
-
     [TestMethod]
     [TestCategory("Transport")]
-    public void Effect_CopiesBgraInputByteExact()
+    public void WritePixels_ThenCopyTightlyPacked_RoundTripsByteExact()
     {
         const int w = 48, h = 32;
         SyphonServer server = null!;
-        SurfaceEffect effect = null!;
         try
         {
-            server = new SyphonServer("Syphon.NET Effect Test");
-            effect = new SurfaceEffect(CopyShader, "copy");
+            server = new SyphonServer("Syphon.NET Surface Test");
         }
         catch (DllNotFoundException)
         {
@@ -186,46 +142,22 @@ public sealed class SurfaceEffectTests
         }
 
         using (server)
-        using (effect)
         {
-            // Fill a server-owned BGRA surface with a known pattern as the effect input.
-            IOSurface input = server.AcquireSurface(w, h, SyphonPixelFormat.Bgra);
+            IOSurface.IOSurface surface = server.AcquireSurface(w, h, CVPixelFormatType.CV32BGRA);
+            Assert.IsTrue(surface.IsBgra());
+            Assert.AreEqual(1, surface.PlaneCount());
+            (int pw, int ph) = surface.PixelSize();
+            Assert.AreEqual(w, pw);
+            Assert.AreEqual(h, ph);
+
             byte[] pattern = Pattern(w, h);
-            WriteRows(input, pattern, w, h);
+            surface.WritePixels(pattern);
 
-            IOSurface output = effect.Render(w, h, [new SurfaceInput(input, MetalPixelFormat.Bgra8Unorm)]);
-            Assert.AreEqual(w, output.Width);
-            Assert.AreEqual(h, output.Height);
-
-            byte[] got = ReadRows(output, w, h);
-            CollectionAssert.AreEqual(pattern, got, "a copy effect must reproduce the input byte-exact");
+            byte[] got = new byte[w * h * 4];
+            int written = surface.CopyTightlyPacked(got);
+            Assert.AreEqual(w * h * 4, written);
+            CollectionAssert.AreEqual(pattern, got, "WritePixels/CopyTightlyPacked must round-trip byte-exact");
         }
-    }
-
-    [TestMethod]
-    [TestCategory("Transport")]
-    public void Effect_InvalidShader_Throws()
-    {
-        try
-        {
-            using var _ = new SurfaceEffect("not valid metal", "nope");
-        }
-        catch (DllNotFoundException)
-        {
-            Assert.Inconclusive("Native Syphon shim not present on this host.");
-            return;
-        }
-        catch (PlatformNotSupportedException)
-        {
-            Assert.Inconclusive("No Metal device available on this host.");
-            return;
-        }
-        catch (InvalidOperationException)
-        {
-            return; // expected: the shader does not compile
-        }
-
-        Assert.Fail("an uncompilable shader should throw InvalidOperationException");
     }
 
     private static byte[] Pattern(int w, int h)
@@ -233,26 +165,6 @@ public sealed class SurfaceEffectTests
         byte[] p = new byte[w * h * 4];
         for (int i = 0; i < p.Length; i++) p[i] = (byte)(i * 7 + 3);
         return p;
-    }
-
-    private static void WriteRows(IOSurface surface, byte[] tight, int w, int h)
-    {
-        int stride = surface.BytesPerRow;
-        using IOSurface.Lock locked = surface.LockBytes(readOnly: false);
-        Span<byte> bytes = locked.Bytes;
-        for (int y = 0; y < h; y++)
-            tight.AsSpan(y * w * 4, w * 4).CopyTo(bytes.Slice(y * stride, w * 4));
-    }
-
-    private static byte[] ReadRows(IOSurface surface, int w, int h)
-    {
-        int stride = surface.BytesPerRow;
-        byte[] tight = new byte[w * h * 4];
-        using IOSurface.Lock locked = surface.LockBytes(readOnly: true);
-        Span<byte> bytes = locked.Bytes;
-        for (int y = 0; y < h; y++)
-            bytes.Slice(y * stride, w * 4).CopyTo(tight.AsSpan(y * w * 4, w * 4));
-        return tight;
     }
 }
 

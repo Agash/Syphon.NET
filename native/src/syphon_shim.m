@@ -9,7 +9,8 @@
 #import <CoreFoundation/CoreFoundation.h>
 
 #import "SyphonServerBase.h"
-#import "SyphonMetalServer.h"
+#import "SyphonSubclassing.h"
+#import "SyphonServerConnectionManager.h"
 #import "SyphonMetalClient.h"
 #import "SyphonServerDirectory.h"
 
@@ -20,16 +21,15 @@
 
 // ---- Shared Metal objects -------------------------------------------------
 
-static id<MTLDevice>       g_device = nil;
-static id<MTLCommandQueue> g_queue  = nil;
+// The server announces IOSurfaces directly (zero-copy, no GPU pass), so only the client needs a
+// Metal device - SyphonMetalClient wraps the received IOSurface as an MTLTexture.
+static id<MTLDevice> g_device = nil;
 
 int sy_init(void)
 {
     if (g_device != nil) { return 0; }
     g_device = MTLCreateSystemDefaultDevice();
-    if (g_device == nil) { return 1; }
-    g_queue = [g_device newCommandQueue];
-    return g_queue != nil ? 0 : 1;
+    return g_device != nil ? 0 : 1;
 }
 
 const char* sy_version(void)
@@ -50,80 +50,44 @@ void sy_pump(double seconds)
     while (CFAbsoluteTimeGetCurrent() < end);
 }
 
-// ---- Helpers --------------------------------------------------------------
-
-static MTLPixelFormat pixel_format_from_fourcc(uint32_t fourcc)
+void sy_pump_once(void)
 {
-    switch (fourcc)
+    // Drain all immediately-pending sources without blocking (0 timeout). Unlike sy_pump, this never
+    // waits when the run loop is idle, so it is safe to call once per published frame.
+    while (CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, true) == kCFRunLoopRunHandledSource)
     {
-        case 'BGRA': return MTLPixelFormatBGRA8Unorm; // 0x42475241
-        case 'RGBA': return MTLPixelFormatRGBA8Unorm; // 0x52474241
-        default:     return MTLPixelFormatBGRA8Unorm;
+        // keep draining until nothing is left
     }
 }
 
-static void dict_set_int(CFMutableDictionaryRef d, CFStringRef key, int32_t value)
-{
-    CFNumberRef n = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &value);
-    CFDictionarySetValue(d, key, n);
-    CFRelease(n);
-}
-
-static IOSurfaceRef create_iosurface(uint32_t width, uint32_t height, uint32_t fourcc)
-{
-    uint32_t bytesPerElement = 4;
-    // Use IOSurface's own alignment for the row and allocation sizes. A hand-rolled alignment
-    // (e.g. 16 bytes) is too small for Metal's IOSurface-backed textures, which misreads every
-    // row after the first when width*4 is not on the device's required stride.
-    size_t bytesPerRow = IOSurfaceAlignProperty(kIOSurfaceBytesPerRow, (size_t)width * bytesPerElement);
-    size_t allocSize = IOSurfaceAlignProperty(kIOSurfaceAllocSize, (size_t)height * bytesPerRow);
-
-    CFMutableDictionaryRef props = CFDictionaryCreateMutable(
-        kCFAllocatorDefault, 0,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-
-    dict_set_int(props, kIOSurfaceWidth, (int32_t)width);
-    dict_set_int(props, kIOSurfaceHeight, (int32_t)height);
-    dict_set_int(props, kIOSurfaceBytesPerElement, (int32_t)bytesPerElement);
-    dict_set_int(props, kIOSurfaceBytesPerRow, (int32_t)bytesPerRow);
-    dict_set_int(props, kIOSurfaceAllocSize, (int32_t)allocSize);
-    dict_set_int(props, kIOSurfacePixelFormat, (int32_t)fourcc);
-
-    IOSurfaceRef surface = IOSurfaceCreate(props);
-    CFRelease(props);
-    return surface;
-}
-
-static id<MTLTexture> texture_from_iosurface(IOSurfaceRef surface, MTLPixelFormat fmt)
-{
-    if (surface == NULL) { return nil; }
-    MTLTextureDescriptor* desc = [MTLTextureDescriptor
-        texture2DDescriptorWithPixelFormat:fmt
-                                     width:IOSurfaceGetWidth(surface)
-                                    height:IOSurfaceGetHeight(surface)
-                                 mipmapped:NO];
-    desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
-    desc.storageMode = MTLStorageModeShared;
-    return [g_device newTextureWithDescriptor:desc iosurface:surface plane:0];
-}
 
 // ---- Server ---------------------------------------------------------------
 
+// The server uses the renderer-free SyphonServerBase: external surfaces are announced directly to
+// clients by their IOSurfaceID (true zero-copy, no per-frame GPU pass), and the CPU-producer path
+// draws into a server-owned BGRA surface obtained from the base. No Metal device, command queue or
+// renderer (and therefore no Metal shader library) is needed on the publish side.
 typedef struct sy_server_t {
-    SyphonMetalServer* server;
-    IOSurfaceRef       surface;   // server-owned writable surface (CPU producer path)
-    id<MTLTexture>     texture;   // texture bound to `surface`
-    uint32_t           width;
-    uint32_t           height;
-    uint32_t           fourcc;
+    SyphonServerBase* server;
+    IOSurfaceRef      owned;      // server-owned writable surface (CPU producer path), +1 retained
+    IOSurfaceRef      announced;  // externally-announced surface we hold a use count on
 } sy_server_t;
+
+// Reach SyphonServerBase's connection manager (a private ivar) so we can announce an arbitrary
+// IOSurface by ID without copying it into a server-owned surface. KVC resolves the `connectionManager`
+// key to the `_connectionManager` ivar (accessInstanceVariablesDirectly is YES by default). The
+// framework is a pinned submodule, so the ivar name is stable.
+static SyphonServerConnectionManager* connection_manager(sy_server_t* s)
+{
+    return (SyphonServerConnectionManager*)[s->server valueForKey:@"connectionManager"];
+}
 
 sy_server sy_server_create(const char* name)
 {
-    if (sy_init() != 0) { return NULL; }
     sy_server_t* s = calloc(1, sizeof(sy_server_t));
     NSString* nsName = name != NULL ? [NSString stringWithUTF8String:name] : nil;
-    s->server = [[SyphonMetalServer alloc] initWithName:nsName device:g_device options:nil];
+    s->server = [[SyphonServerBase alloc] initWithName:nsName options:nil];
+    if (s->server == nil) { free(s); return NULL; }
     return s;
 }
 
@@ -131,10 +95,10 @@ void sy_server_destroy(sy_server server)
 {
     if (server == NULL) { return; }
     sy_server_t* s = (sy_server_t*)server;
+    if (s->announced) { IOSurfaceDecrementUseCount(s->announced); s->announced = NULL; }
+    if (s->owned) { CFRelease(s->owned); s->owned = NULL; }
     [s->server stop];
     s->server = nil;
-    s->texture = nil;
-    if (s->surface) { CFRelease(s->surface); s->surface = NULL; }
     free(s);
 }
 
@@ -144,60 +108,58 @@ int sy_server_has_clients(sy_server server)
     return ((sy_server_t*)server)->server.hasClients ? 1 : 0;
 }
 
-static int publish_texture(sy_server_t* s, id<MTLTexture> tex, IOSurfaceRef surf, int flipped)
-{
-    if (tex == nil) { return 1; }
-
-    IOSurfaceIncrementUseCount(surf);
-    id<MTLCommandBuffer> cmd = [g_queue commandBuffer];
-
-    [s->server publishFrameTexture:tex
-                   onCommandBuffer:cmd
-                       imageRegion:NSMakeRect(0, 0, tex.width, tex.height)
-                           flipped:(flipped != 0)];
-
-    [cmd addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull c) {
-        (void)c;
-        IOSurfaceDecrementUseCount(surf);
-    }];
-    [cmd commit];
-    return 0;
-}
-
 int sy_server_publish_surface(sy_server server, sy_iosurface surface, int flipped)
 {
+    // Zero-copy: announce the surface by ID. There is no GPU pass, so `flipped` cannot be applied
+    // here - the surface is presented as-is (callers pass already-upright surfaces).
+    (void)flipped;
     if (server == NULL || surface == 0) { return 1; }
     sy_server_t* s = (sy_server_t*)server;
     IOSurfaceRef surf = (IOSurfaceRef)surface;
 
-    OSType fourcc = IOSurfaceGetPixelFormat(surf);
-    id<MTLTexture> tex = texture_from_iosurface(surf, pixel_format_from_fourcc(fourcc));
-    return publish_texture(s, tex, surf, flipped);
+    SyphonServerConnectionManager* cm = connection_manager(s);
+    if (cm == nil) { return 1; }
+
+    // Hold exactly one use count on the live surface so it stays valid while clients read it,
+    // releasing the previously-announced one.
+    if (s->announced != surf)
+    {
+        IOSurfaceIncrementUseCount(surf);
+        if (s->announced) { IOSurfaceDecrementUseCount(s->announced); }
+        s->announced = surf;
+    }
+
+    [cm setSurfaceID:IOSurfaceGetID(surf)];
+    [cm publishNewFrame];
+    return 0;
 }
 
 sy_iosurface sy_server_acquire_surface(sy_server server, uint32_t width, uint32_t height, uint32_t pixel_format)
 {
+    // SyphonServerBase surfaces are always BGRA8; the format argument is accepted for ABI symmetry
+    // with the GPU path but ignored.
+    (void)pixel_format;
     if (server == NULL || width == 0 || height == 0) { return 0; }
     sy_server_t* s = (sy_server_t*)server;
 
-    if (s->surface == NULL || s->width != width || s->height != height || s->fourcc != pixel_format)
-    {
-        if (s->surface) { CFRelease(s->surface); s->surface = NULL; }
-        s->texture = nil;
-        s->surface = create_iosurface(width, height, pixel_format);
-        if (s->surface == NULL) { return 0; }
-        s->texture = texture_from_iosurface(s->surface, pixel_format_from_fourcc(pixel_format));
-        s->width = width; s->height = height; s->fourcc = pixel_format;
-    }
-    return (sy_iosurface)s->surface;
+    // newSurfaceForWidth:height: returns a +1-retained surface (reused when the size is unchanged);
+    // release our previous retain and keep the new one until the next acquire or destroy.
+    IOSurfaceRef surf = [s->server newSurfaceForWidth:width height:height options:nil];
+    if (surf == NULL) { return 0; }
+    if (s->owned) { CFRelease(s->owned); }
+    s->owned = surf;
+    return (sy_iosurface)surf;
 }
 
 int sy_server_publish_current(sy_server server, int flipped)
 {
+    // The CPU producer wrote into the server-owned surface; `flipped` is not applied (no GPU pass).
+    (void)flipped;
     if (server == NULL) { return 1; }
     sy_server_t* s = (sy_server_t*)server;
-    if (s->surface == NULL || s->texture == nil) { return 1; }
-    return publish_texture(s, s->texture, s->surface, flipped);
+    if (s->owned == NULL) { return 1; }
+    [s->server publish];
+    return 0;
 }
 
 // ---- Directory ------------------------------------------------------------
@@ -378,123 +340,4 @@ sy_iosurface sy_client_copy_new_frame(sy_client client)
     if (surf == NULL) { return 0; }
     CFRetain(surf); // keep alive after the texture is released; managed side CFReleases
     return (sy_iosurface)surf;
-}
-
-// ---- Surface effect (general GPU fragment-shader pass over IOSurfaces) -----
-
-#define SY_MAX_EFFECT_INPUTS 4
-
-// Built-in preamble prepended to every caller fragment source: the full-screen-triangle vertex
-// stage, the VOut stage-in struct, and a linear clamped sampler. The source lives in an editable
-// .metal file (native/shaders/sy_fullscreen.metal) and is embedded here at build time.
-static const char kEffectPreambleBytes[] = {
-#embed "../shaders/sy_fullscreen.metal"
-    , 0
-};
-
-typedef struct sy_effect_t {
-    id<MTLRenderPipelineState> pipeline;
-    IOSurfaceRef               out;
-    id<MTLTexture>             outTex;
-    uint32_t                   outW, outH;
-} sy_effect_t;
-
-static id<MTLTexture> texture_from_iosurface_plane(IOSurfaceRef surface, MTLPixelFormat fmt, NSUInteger plane)
-{
-    if (surface == NULL) { return nil; }
-    MTLTextureDescriptor* desc = [MTLTextureDescriptor
-        texture2DDescriptorWithPixelFormat:fmt
-                                     width:IOSurfaceGetWidthOfPlane(surface, plane)
-                                    height:IOSurfaceGetHeightOfPlane(surface, plane)
-                                 mipmapped:NO];
-    desc.usage = MTLTextureUsageShaderRead;
-    desc.storageMode = MTLStorageModeShared;
-    return [g_device newTextureWithDescriptor:desc iosurface:surface plane:plane];
-}
-
-sy_effect sy_effect_create(const char* msl_source, const char* fragment_function)
-{
-    if (msl_source == NULL || fragment_function == NULL) { return NULL; }
-    if (sy_init() != 0) { return NULL; }
-
-    NSString* preamble = [NSString stringWithUTF8String:kEffectPreambleBytes];
-    NSString* source = [preamble stringByAppendingString:[NSString stringWithUTF8String:msl_source]];
-    NSError* error = nil;
-    id<MTLLibrary> lib = [g_device newLibraryWithSource:source options:nil error:&error];
-    if (lib == nil) { return NULL; }
-
-    id<MTLFunction> vfn = [lib newFunctionWithName:@"sy_fullscreen_vs"];
-    id<MTLFunction> ffn = [lib newFunctionWithName:[NSString stringWithUTF8String:fragment_function]];
-    if (vfn == nil || ffn == nil) { return NULL; }
-
-    MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
-    desc.vertexFunction = vfn;
-    desc.fragmentFunction = ffn;
-    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-    id<MTLRenderPipelineState> pso = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
-    if (pso == nil) { return NULL; }
-
-    sy_effect_t* e = calloc(1, sizeof(sy_effect_t));
-    e->pipeline = pso;
-    return e;
-}
-
-void sy_effect_destroy(sy_effect effect)
-{
-    if (effect == NULL) { return; }
-    sy_effect_t* e = (sy_effect_t*)effect;
-    e->pipeline = nil;
-    e->outTex = nil;
-    if (e->out) { CFRelease(e->out); e->out = NULL; }
-    free(e);
-}
-
-sy_iosurface sy_effect_render(sy_effect effect,
-                              uint32_t out_width, uint32_t out_height,
-                              const sy_iosurface* in_surfaces,
-                              const uint32_t* in_planes,
-                              const uint32_t* in_formats,
-                              int count)
-{
-    if (effect == NULL || out_width == 0 || out_height == 0) { return 0; }
-    if (count <= 0 || count > SY_MAX_EFFECT_INPUTS || in_surfaces == NULL || in_planes == NULL || in_formats == NULL) { return 0; }
-    sy_effect_t* e = (sy_effect_t*)effect;
-
-    // Reused BGRA output surface, recreated on a size change.
-    if (e->out == NULL || e->outW != out_width || e->outH != out_height)
-    {
-        e->outTex = nil;
-        if (e->out) { CFRelease(e->out); e->out = NULL; }
-        e->out = create_iosurface(out_width, out_height, 'BGRA');
-        if (e->out == NULL) { return 0; }
-        e->outTex = texture_from_iosurface(e->out, MTLPixelFormatBGRA8Unorm);
-        if (e->outTex == nil) { CFRelease(e->out); e->out = NULL; return 0; }
-        e->outW = out_width; e->outH = out_height;
-    }
-
-    id<MTLTexture> inputs[SY_MAX_EFFECT_INPUTS] = { nil, nil, nil, nil };
-    for (int i = 0; i < count; i++)
-    {
-        if (in_surfaces[i] == 0) { return 0; }
-        inputs[i] = texture_from_iosurface_plane((IOSurfaceRef)in_surfaces[i],
-                                                 (MTLPixelFormat)in_formats[i],
-                                                 (NSUInteger)in_planes[i]);
-        if (inputs[i] == nil) { return 0; }
-    }
-
-    id<MTLCommandBuffer> cmd = [g_queue commandBuffer];
-    MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
-    rp.colorAttachments[0].texture = e->outTex;
-    rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;  // every pixel is written
-    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-
-    id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:rp];
-    [enc setRenderPipelineState:e->pipeline];
-    for (int i = 0; i < count; i++) { [enc setFragmentTexture:inputs[i] atIndex:(NSUInteger)i]; }
-    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    [enc endEncoding];
-    [cmd commit];
-    [cmd waitUntilCompleted];  // result surface must be ready for the encoder/publisher
-
-    return cmd.status == MTLCommandBufferStatusCompleted ? (sy_iosurface)e->out : 0;
 }

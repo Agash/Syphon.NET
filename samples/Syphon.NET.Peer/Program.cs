@@ -6,6 +6,7 @@
 // printed pinpoints the failing step.
 
 using System.Diagnostics;
+using CoreVideo;
 using Syphon.NET;
 
 // Force auto-flush: when stdout is redirected (CI) it is otherwise block-buffered and a native
@@ -51,44 +52,37 @@ static int Probe()
 
     // BGRA is Syphon's canonical surface format, so a BGRA round-trip must be byte-exact.
     // Test both a 256-aligned width (64) and a non-aligned one (48) to confirm row stride.
-    bool bgra64 = Loopback(SyphonPixelFormat.Bgra, 64, 64, swizzle: false, out string d1);
+    bool bgra64 = Loopback(64, 64, out string d1);
     Log($"LOOPBACK BGRA 64x64: {(bgra64 ? "PASS" : "FAIL")} ({d1})");
 
-    bool bgra48 = Loopback(SyphonPixelFormat.Bgra, 48, 32, swizzle: false, out string d2);
+    bool bgra48 = Loopback(48, 32, out string d2);
     Log($"LOOPBACK BGRA 48x32: {(bgra48 ? "PASS" : "FAIL")} ({d2})");
-
-    // Publishing RGBA is colour-converted into Syphon's BGRA surface (R/B swapped). Verify the
-    // colour is preserved (not the raw byte order).
-    bool rgba = Loopback(SyphonPixelFormat.Rgba, 48, 32, swizzle: true, out string d3);
-    Log($"LOOPBACK RGBA->BGRA 48x32: {(rgba ? "PASS" : "FAIL")} ({d3})");
 
     DirectoryProbe("Syphon.NET DirProbe");
 
-    // The core guarantee is byte-exact BGRA transport; RGBA colour-correctness is a bonus.
     bool ok = bgra64 && bgra48;
     Log($"SUMMARY: {(ok ? "transport-ok" : "transport-failed")}");
     return ok ? 0 : 1;
 }
 
-static bool Loopback(SyphonPixelFormat format, int w, int h, bool swizzle, out string detail)
+static bool Loopback(int w, int h, out string detail)
 {
-    byte[] src = Pattern(w, h);
-    byte[] expected = swizzle ? SwapRedBlue(src) : src;
+    byte[] expected = Pattern(w, h);
 
     // Fresh server per test so a prior resolution does not leave a stale surface.
-    using var server = new SyphonServer($"Syphon.NET Probe {format} {w}x{h}");
+    using var server = new SyphonServer($"Syphon.NET Probe {w}x{h}");
     using SyphonClient client = server.CreateLoopbackClient();
 
     // Publish repeatedly and keep the most recent delivered frame; discard an initial stale one
     // by requiring a few publishes before accepting.
-    SyphonFrame? frame = null;
+    IOSurface.IOSurface? frame = null;
     var sw = Stopwatch.StartNew();
     int published = 0;
     while (sw.Elapsed < TimeSpan.FromSeconds(5))
     {
-        server.PublishPixels(src, w, h, format);
+        server.PublishPixels(expected, w, h, CVPixelFormatType.CV32BGRA);
         published++;
-        SyphonFrame? f = client.TryGetFrame();
+        IOSurface.IOSurface? f = client.TryGetFrame();
         if (f is not null)
         {
             frame?.Dispose();
@@ -102,25 +96,27 @@ static bool Loopback(SyphonPixelFormat format, int w, int h, bool swizzle, out s
 
     using (frame)
     {
-        if (frame.Surface.Width != w || frame.Surface.Height != h)
+        (int gotW, int gotH) = frame.PixelSize();
+        if (gotW != w || gotH != h)
         {
-            detail = $"dimension {frame.Surface.Width}x{frame.Surface.Height} != {w}x{h}";
+            detail = $"dimension {gotW}x{gotH} != {w}x{h}";
             return false;
         }
 
         byte[] got = new byte[w * h * 4];
-        frame.CopyTo(got);
+        frame.CopyTightlyPacked(got);
         int mismatch = FirstMismatch(expected, got);
         if (mismatch >= 0)
         {
-            Log($"    stride={frame.Surface.BytesPerRow} (tight={w * 4}), recv format {frame.Surface.PixelFormat}");
+            using (var locked = frame.LockBytes(readOnly: true))
+                Log($"    stride={locked.BytesPerRow} (tight={w * 4}), recv format 0x{frame.PixelFormat:X8}");
             Log($"    expected[0..32]: {Hex(expected, 32)}");
             Log($"    got     [0..32]: {Hex(got, 32)}");
             detail = $"mismatch at {mismatch} (expected {expected[mismatch]}, got {got[mismatch]})";
             return false;
         }
 
-        detail = $"{w}x{h} exact incl. alpha, recv format {frame.Surface.PixelFormat}";
+        detail = $"{w}x{h} exact incl. alpha, recv format 0x{frame.PixelFormat:X8}";
         return true;
     }
 }
@@ -193,7 +189,7 @@ static int ServerMode(string[] cmdArgs)
         var sw = Stopwatch.StartNew();
         while (sw.Elapsed < TimeSpan.FromSeconds(seconds))
         {
-            server.PublishPixels(src, w, h, SyphonPixelFormat.Bgra);
+            server.PublishPixels(src, w, h, CVPixelFormatType.CV32BGRA);
             // Pump the run loop (also paces ~60fps) so the server answers directory announce
             // requests and stays discoverable by foreign clients.
             SyphonServer.PumpEvents(TimeSpan.FromMilliseconds(16));
@@ -240,12 +236,12 @@ static int CrossTest()
         using (client)
         {
             byte[] expected = Pattern(w, h);
-            SyphonFrame? frame = null;
+            IOSurface.IOSurface? frame = null;
             var psw = Stopwatch.StartNew();
             int got = 0;
             while (psw.Elapsed < TimeSpan.FromSeconds(8))
             {
-                SyphonFrame? f = client.TryGetFrame();
+                IOSurface.IOSurface? f = client.TryGetFrame();
                 if (f is not null) { frame?.Dispose(); frame = f; if (++got >= 3) break; }
                 Thread.Sleep(16);
             }
@@ -253,13 +249,14 @@ static int CrossTest()
             if (frame is null) { Log("CROSS: no frame delivered across processes"); return 1; }
             using (frame)
             {
-                if (frame.Surface.Width != w || frame.Surface.Height != h)
+                (int gotW, int gotH) = frame.PixelSize();
+                if (gotW != w || gotH != h)
                 {
-                    Log($"CROSS: wrong dimension {frame.Surface.Width}x{frame.Surface.Height}");
+                    Log($"CROSS: wrong dimension {gotW}x{gotH}");
                     return 1;
                 }
                 byte[] buf = new byte[w * h * 4];
-                frame.CopyTo(buf);
+                frame.CopyTightlyPacked(buf);
                 int mm = FirstMismatch(expected, buf);
                 if (mm >= 0)
                 {
@@ -302,7 +299,7 @@ static int ForeignClient(string[] cmdArgs)
     Log($"[cs-client] discovered '{name}' at index {idx}; connecting");
 
     using SyphonClient client = directory.CreateClient(idx);
-    SyphonFrame? frame = null;
+    IOSurface.IOSurface? frame = null;
     var psw = Stopwatch.StartNew();
     while (psw.Elapsed < TimeSpan.FromSeconds(timeout) && frame is null)
     {
@@ -313,11 +310,11 @@ static int ForeignClient(string[] cmdArgs)
 
     using (frame)
     {
-        int w = frame.Surface.Width, h = frame.Surface.Height;
+        (int w, int h) = frame.PixelSize();
         byte[] got = new byte[w * h * 4];
-        frame.CopyTo(got);
+        frame.CopyTightlyPacked(got);
         byte[] expected = Pattern(w, h);
-        Log($"[cs-client] recv {w}x{h} format {frame.Surface.PixelFormat}");
+        Log($"[cs-client] recv {w}x{h} format 0x{frame.PixelFormat:X8}");
         Log($"[cs-client] expected[0..8] {Hex(expected, 8)}");
         Log($"[cs-client] got     [0..8] {Hex(got, 8)}");
         if (FirstMismatch(expected, got) < 0) { Log("[cs-client] PASS byte-exact"); return 0; }

@@ -1,4 +1,6 @@
 using System.Text;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Syphon.NET.Interop;
 
 namespace Syphon.NET;
@@ -6,18 +8,24 @@ namespace Syphon.NET;
 /// <summary>
 /// Discovers Syphon servers published by other applications and creates clients for them.
 /// </summary>
-public sealed class SyphonServerDirectory : IDisposable
+public sealed partial class SyphonServerDirectory : IDisposable
 {
     private const int FieldBufferSize = 256;
+    private readonly ILoggerFactory _loggerFactory;
+    private readonly ILogger _logger;
     private nint _handle;
 
     /// <summary>Open the shared server directory.</summary>
-    public SyphonServerDirectory()
+    /// <param name="loggerFactory">Optional factory for Debug/Trace diagnostics; omit for none.</param>
+    public SyphonServerDirectory(ILoggerFactory? loggerFactory = null)
     {
         SyphonRuntime.EnsureInitialized();
+        _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
+        _logger = _loggerFactory.CreateLogger("Syphon.NET.Directory");
         _handle = SyphonNative.sy_directory_create();
         if (_handle == 0)
             throw new InvalidOperationException("Failed to open the Syphon server directory.");
+        LogCreated();
     }
 
     /// <summary>Number of servers currently advertised.</summary>
@@ -69,7 +77,7 @@ public sealed class SyphonServerDirectory : IDisposable
     public SyphonClient CreateClient(int index, Action? onFrameReady = null)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
-        return SyphonClient.FromDirectory(_handle, index, onFrameReady);
+        return SyphonClient.FromDirectory(_handle, index, onFrameReady, _loggerFactory.CreateLogger("Syphon.NET.Client"));
     }
 
     private static string Decode(byte[] buffer)
@@ -85,4 +93,7 @@ public sealed class SyphonServerDirectory : IDisposable
         nint h = Interlocked.Exchange(ref _handle, 0);
         if (h != 0) SyphonNative.sy_directory_destroy(h);
     }
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "server directory opened")]
+    private partial void LogCreated();
 }

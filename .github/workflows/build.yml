@@ -16,7 +16,9 @@ env:
 jobs:
   build_and_test:
     name: Build, Test, and Pack
-    runs-on: macos-latest
+    # macos-26 is the image that ships the Xcode 26.x toolchain the net11.0-macos workload expects (macos-latest
+    # only carries Xcode 16.x). Matches the StreamWeaver native-head build.
+    runs-on: macos-26
 
     steps:
       - uses: actions/checkout@v6
@@ -24,12 +26,23 @@ jobs:
           fetch-depth: 0        # MinVer needs full history
           submodules: recursive # Syphon framework source for the native shim
 
+      # Select Xcode 26.5: the net11.0-macos preview workload's Microsoft.macOS links against the macOS 26.5 SDK,
+      # and the managed linker hard-fails (MM0179) on anything older. macos-26 ships 26.5 as default; pin it so a
+      # future default bump can't regress the toolchain. The deployment target stays at 15.0.
+      - name: Select Xcode 26.5
+        run: sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer && xcodebuild -version
+
       - uses: actions/setup-dotnet@v5
         with:
           # net11.0 needs the .NET 11 preview SDK alongside .NET 10; global.json selects it.
           dotnet-version: |
             10.0.x
             11.0.x
+
+      # The net11.0-macos TFM requires the macos workload; the preview SDK no longer bundles it, so install
+      # it explicitly before restore (NETSDK1147 otherwise).
+      - name: Install macos workload
+        run: dotnet workload install macos
 
       - name: Build native shim (universal arm64 + x86_64)
         run: bash native/build-native.sh
@@ -95,9 +108,18 @@ jobs:
         # Gating: a foreign client receives our published frames byte-exact. Connects via our
         # exported description (syphon-python's directory wrapper crashes on an iconless server).
         run: |
-          dotnet run --project samples/Syphon.NET.Peer -c Release --no-build -- server --name DotNetForeign --w 64 --h 64 --seconds 45 --desc-file /tmp/dn_desc.bin --ready-file /tmp/dn_ready &
+          # Launch the app-bundle apphost directly rather than via `dotnet run`. On a headless runner the standalone
+          # publisher stalls under the `dotnet run` supervisor; running the managed dll under `dotnet` instead aborts
+          # in the publish loop (no ObjC/app init). The apphost is the form that works - it is exactly what the
+          # (passing) cross-process test spawns via Environment.ProcessPath. Byte-exact transport is otherwise identical.
+          APP=$(find samples/Syphon.NET.Peer/bin/Release -path '*osx-arm64*MacOS/Syphon.NET.Peer' -type f | head -1)
+          echo "server apphost: $APP"
+          "$APP" server --name DotNetForeign --w 64 --h 64 --seconds 60 --desc-file /tmp/dn_desc.bin --ready-file /tmp/dn_ready > /tmp/dn_srv.log 2>&1 &
           CS=$!
-          for i in $(seq 1 50); do [ -f /tmp/dn_ready ] && break; sleep 0.2; done
+          # Wait up to 30s for the server to export its description before the client reads it (else the client
+          # races ahead to a missing desc file). Dump the server log if it never signals ready.
+          for i in $(seq 1 150); do [ -f /tmp/dn_ready ] && break; sleep 0.2; done
+          if [ ! -f /tmp/dn_ready ]; then echo "::error::Syphon.NET server never wrote its ready file"; echo "--- server log ---"; cat /tmp/dn_srv.log || true; kill $CS 2>/dev/null || true; exit 1; fi
           /tmp/sp/bin/python tests/interop/syphon_peer.py client --name DotNetForeign --desc-file /tmp/dn_desc.bin --w 64 --h 64 --timeout 25
           RC=$?
           kill $CS 2>/dev/null || true
