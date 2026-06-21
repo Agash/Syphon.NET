@@ -1,9 +1,16 @@
 # Syphon.NET
 
+[![NuGet](https://img.shields.io/nuget/v/Syphon.NET.svg)](https://www.nuget.org/packages/Syphon.NET)
+[![build](https://github.com/Agash/Syphon.NET/actions/workflows/build.yml/badge.svg)](https://github.com/Agash/Syphon.NET/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 .NET bindings for [Syphon](https://syphon.info), the macOS framework for sharing video frames
 between applications in real time. Publish frames for other apps to pick up, or receive frames
 another app is sharing, with no pixel copies in between. Works with OBS, Resolume, TouchDesigner,
 and other tools that speak Syphon.
+
+> **Alpha.** Early and working, but largely untested in the wild and rough in places. Try it and file
+> issues; expect breaking changes before 1.0.
 
 ## Requirements
 
