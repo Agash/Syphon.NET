@@ -26,12 +26,14 @@ jobs:
           fetch-depth: 0        # MinVer needs full history
           submodules: recursive # Syphon framework source for the native shim
 
-      # Pin Xcode to the version the net11.0-macos workload demands: Microsoft.macOS hard-fails the build when
-      # Xcode is older than the SDK it was built against, and the preview.7 workload requires 26.6. Pin it rather
-      # than taking the runner default so a future image bump can't move the toolchain under us. Raise this in
-      # lockstep with the .NET 11 preview. The deployment target stays at 15.0.
-      - name: Select Xcode 26.6
-        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer && xcodebuild -version
+      # Deliberately not pinned to a fixed Xcode. The macOS SDK pack states a minimum Xcode and the workload
+      # manifest is installed unpinned below, so a hard pin goes stale the moment the manifest moves: pinning
+      # 26.5 while the pack required 26.6 failed this job on every run. The image default tracks the newest
+      # installed Xcode, which is what the current manifest is built against. Reported so the log names it.
+      - name: Report selected Xcode
+        run: |
+          xcode-select -p
+          xcodebuild -version
 
       - uses: actions/setup-dotnet@v5
         with:
