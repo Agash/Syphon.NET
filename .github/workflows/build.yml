@@ -26,11 +26,12 @@ jobs:
           fetch-depth: 0        # MinVer needs full history
           submodules: recursive # Syphon framework source for the native shim
 
-      # Select Xcode 26.5: the net11.0-macos preview workload's Microsoft.macOS links against the macOS 26.5 SDK,
-      # and the managed linker hard-fails (MM0179) on anything older. macos-26 ships 26.5 as default; pin it so a
-      # future default bump can't regress the toolchain. The deployment target stays at 15.0.
-      - name: Select Xcode 26.5
-        run: sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer && xcodebuild -version
+      # Pin Xcode to the version the net11.0-macos workload demands: Microsoft.macOS hard-fails the build when
+      # Xcode is older than the SDK it was built against, and the preview.7 workload requires 26.6. Pin it rather
+      # than taking the runner default so a future image bump can't move the toolchain under us. Raise this in
+      # lockstep with the .NET 11 preview. The deployment target stays at 15.0.
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer && xcodebuild -version
 
       - uses: actions/setup-dotnet@v5
         with:
