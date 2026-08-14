@@ -74,7 +74,7 @@ static bool Loopback(int w, int h, out string detail)
     using SyphonClient client = server.CreateLoopbackClient();
 
     // Publish repeatedly and keep the most recent delivered frame; discard an initial stale one
-    // by requiring a few publishes before accepting.
+    // by requiring a few publishes before accepting. Frames belong to the client - never dispose one.
     IOSurface.IOSurface? frame = null;
     var sw = Stopwatch.StartNew();
     int published = 0;
@@ -85,7 +85,6 @@ static bool Loopback(int w, int h, out string detail)
         IOSurface.IOSurface? f = client.TryGetFrame();
         if (f is not null)
         {
-            frame?.Dispose();
             frame = f;
             if (published >= 4) break;
         }
@@ -94,7 +93,6 @@ static bool Loopback(int w, int h, out string detail)
 
     if (frame is null) { detail = "no frame delivered"; return false; }
 
-    using (frame)
     {
         (int gotW, int gotH) = frame.PixelSize();
         if (gotW != w || gotH != h)
@@ -242,12 +240,11 @@ static int CrossTest()
             while (psw.Elapsed < TimeSpan.FromSeconds(8))
             {
                 IOSurface.IOSurface? f = client.TryGetFrame();
-                if (f is not null) { frame?.Dispose(); frame = f; if (++got >= 3) break; }
+                if (f is not null) { frame = f; if (++got >= 3) break; }
                 Thread.Sleep(16);
             }
 
             if (frame is null) { Log("CROSS: no frame delivered across processes"); return 1; }
-            using (frame)
             {
                 (int gotW, int gotH) = frame.PixelSize();
                 if (gotW != w || gotH != h)
@@ -308,7 +305,6 @@ static int ForeignClient(string[] cmdArgs)
     }
     if (frame is null) { Log("[cs-client] no frame received from foreign server"); return 4; }
 
-    using (frame)
     {
         (int w, int h) = frame.PixelSize();
         byte[] got = new byte[w * h * 4];

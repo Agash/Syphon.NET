@@ -26,6 +26,8 @@ public sealed partial class SyphonServer : IDisposable
     private readonly ILogger _logger;
     private nint _handle;
     private bool _firstPublishLogged;
+    // Strong reference to the surface most recently handed out by AcquireSurface; see the note there.
+    private IOSurface.IOSurface? _currentSurface;
 
     /// <summary>Create a server advertised to other applications under <paramref name="name"/>.</summary>
     /// <param name="name">Server name advertised to clients.</param>
@@ -68,6 +70,12 @@ public sealed partial class SyphonServer : IDisposable
     /// Get a server-owned writable surface of the given size and format, recreated when the
     /// dimensions or format change. Write pixels into it, then call <see cref="PublishCurrent"/>.
     /// </summary>
+    /// <remarks>
+    /// The surface belongs to the server - do <b>not</b> dispose it. It is recycled while the size and
+    /// format hold, so successive calls hand back the very same managed instance (macOS bindings keep one
+    /// managed peer per native object); disposing it would zero the handle of an instance the server and
+    /// every later call still share, which then reports a surface with no size, no planes and no pixels.
+    /// </remarks>
     public IOSurface.IOSurface AcquireSurface(int width, int height, CVPixelFormatType format = CVPixelFormatType.CV32BGRA)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
@@ -75,9 +83,11 @@ public sealed partial class SyphonServer : IDisposable
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
         nint surface = SyphonNative.sy_server_acquire_surface(_handle, (uint)width, (uint)height, (uint)format);
         if (surface == 0) throw new InvalidOperationException("Failed to acquire a surface.");
-        // The server owns the surface (it recreates/releases it), so wrap it non-owning.
-        return Runtime.GetINativeObject<IOSurface.IOSurface>(surface, owns: false)
+        // The server owns the surface (it recreates/releases it), so wrap it non-owning. Held onto so the
+        // peer callers write through is not finalized between acquire and publish.
+        _currentSurface = Runtime.GetINativeObject<IOSurface.IOSurface>(surface, owns: false)
             ?? throw new InvalidOperationException("Failed to wrap the acquired surface.");
+        return _currentSurface;
     }
 
     /// <summary>Publish the surface most recently returned by <see cref="AcquireSurface"/>.</summary>
@@ -159,6 +169,9 @@ public sealed partial class SyphonServer : IDisposable
     {
         nint h = Interlocked.Exchange(ref _handle, 0);
         if (h != 0) SyphonNative.sy_server_destroy(h);
+        // Drop the reference rather than disposing: the peer is shared with any loopback client that
+        // received this surface, and with callers still holding it.
+        _currentSurface = null;
     }
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "server created")]
