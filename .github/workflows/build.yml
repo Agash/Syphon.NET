@@ -63,9 +63,12 @@ jobs:
 
       - name: Diagnose test host layout
         run: |
-          find tests/Syphon.NET.Tests/bin -maxdepth 5 -name '*.app' -o -maxdepth 5 -name 'Syphon.NET.Tests'
+          ls -la tests/Syphon.NET.Tests/bin/Release/net11.0-macos/osx-arm64/
+          echo "--- bundle ---"
+          find tests/Syphon.NET.Tests/bin -name 'Syphon.NET.Tests.app' -maxdepth 5 -exec find {} \; | head -30
+          echo "--- run command ---"
           dotnet msbuild tests/Syphon.NET.Tests/Syphon.NET.Tests.csproj -p:Configuration=Release \
-            -t:_ComputeRunArguments -getProperty:RunCommand,RunArguments,RuntimeIdentifier,RunWithOpen || true
+            -t:ComputeRunArguments -getProperty:RunCommand,RunArguments,RuntimeIdentifier,RunWithOpen || true
 
       - name: Test (value-type)
         run: dotnet test Syphon.NET.slnx --no-build -c Release -- --coverage --coverage-settings coverage.settings.xml --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
