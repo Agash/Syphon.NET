@@ -53,6 +53,11 @@ jobs:
       - name: Restore
         run: dotnet restore Syphon.NET.slnx
 
+      - name: Diagnose test host properties
+        run: |
+          dotnet msbuild tests/Syphon.NET.Tests/Syphon.NET.Tests.csproj -c Release \
+            -getProperty:OutputType,IsTestingPlatformApplication,GenerateTestingPlatformEntryPoint,EnableMSTestRunner,RuntimeIdentifier,RunCommand,OutputPath
+
       - name: Build
         run: dotnet build Syphon.NET.slnx --no-restore -c Release
 
