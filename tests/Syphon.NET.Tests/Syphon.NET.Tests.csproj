@@ -16,6 +16,12 @@
     <IsPackable>false</IsPackable>
     <EnableMSTestRunner>true</EnableMSTestRunner>
     <OutputType>Exe</OutputType>
+    <!-- The Apple SDK turns entry-point generation off, because an app on this target is normally
+         expected to hand-write Main and start NSApplication. A test module has no UI and the runner
+         is its entry point, so opt back in: the platform only defaults this property, an explicit
+         value wins, and the generated Main registers the runner and every extension hook. Without
+         it the module compiles to an Exe with no Main at all. -->
+    <GenerateTestingPlatformEntryPoint>true</GenerateTestingPlatformEntryPoint>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
