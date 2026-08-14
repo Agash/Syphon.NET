@@ -63,12 +63,11 @@ jobs:
 
       - name: Diagnose test host layout
         run: |
-          ls -la tests/Syphon.NET.Tests/bin/Release/net11.0-macos/osx-arm64/
-          echo "--- bundle ---"
-          find tests/Syphon.NET.Tests/bin -name 'Syphon.NET.Tests.app' -maxdepth 5 -exec find {} \; | head -30
-          echo "--- run command ---"
-          dotnet msbuild tests/Syphon.NET.Tests/Syphon.NET.Tests.csproj -p:Configuration=Release \
-            -t:ComputeRunArguments -getProperty:RunCommand,RunArguments,RuntimeIdentifier,RunWithOpen || true
+          APP=tests/Syphon.NET.Tests/bin/Release/net11.0-macos/osx-arm64/Syphon.NET.Tests.app
+          echo "--- shim in bundle ---"
+          find "$APP" -name 'libsyphon_shim.dylib'
+          echo "--- apphost, transport filter ---"
+          "$APP/Contents/MacOS/Syphon.NET.Tests" --filter "TestCategory=Transport" || echo "apphost exit=$?"
 
       - name: Test (value-type)
         run: dotnet test Syphon.NET.slnx --no-build -c Release -- --coverage --coverage-settings coverage.settings.xml --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
