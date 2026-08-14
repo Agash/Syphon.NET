@@ -3,16 +3,22 @@
     <!-- The library binds Microsoft's macOS frameworks (IOSurface/CoreVideo/Metal), so it is
          macOS-only; tests share that target. -->
     <TargetFramework>net11.0-macos</TargetFramework>
+    <!-- The test runner is the test module's own entry point, so this is an app like any other
+         -macos Exe: the SDK builds it into a .app bundle and points RunCommand at the apphost
+         inside it. That bundle is only emitted for a RID-specific build. Without candidate RIDs
+         declared here the slnx-level restore emits no RID asset target, the bundle is never built,
+         and RunCommand resolves to an empty RID segment (bin/Release/net11.0-macos//...) that does
+         not exist - which the platform reports as a launch failure and zero tests. Listing both
+         keeps arm64 and Intel hosts working; the samples project does the same for the same reason. -->
+    <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
     <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
     <ApplicationId>net.syphon.tests</ApplicationId>
     <IsPackable>false</IsPackable>
+    <EnableMSTestRunner>true</EnableMSTestRunner>
+    <OutputType>Exe</OutputType>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- Deliberately not on the Microsoft.Testing.Platform runner, unlike every other repo here.
-         A net11.0-macos test project builds into a .app bundle, and MTP tries to launch an
-         executable inside it that a plain build does not produce, so the run reports zero tests.
-         That also rules out MTP's --coverage, which is why this repo reports no coverage. -->
     <!-- CA1515: test types do not need to be internal -->
     <NoWarn>CA1515</NoWarn>
   </PropertyGroup>
@@ -21,6 +27,7 @@
     <PackageReference Include="Microsoft.Testing.Platform.MSBuild" />
     <PackageReference Include="MSTest.TestAdapter" />
     <PackageReference Include="MSTest.TestFramework" />
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" />
   </ItemGroup>
 
   <ItemGroup>
