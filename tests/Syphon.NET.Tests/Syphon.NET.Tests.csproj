@@ -3,25 +3,25 @@
     <!-- The library binds Microsoft's macOS frameworks (IOSurface/CoreVideo/Metal), so it is
          macOS-only; tests share that target. -->
     <TargetFramework>net11.0-macos</TargetFramework>
-    <!-- The test runner is the test module's own entry point, so this is an app like any other
-         -macos Exe: the SDK builds it into a .app bundle and points RunCommand at the apphost
-         inside it. That bundle is only emitted for a RID-specific build. Without candidate RIDs
-         declared here the slnx-level restore emits no RID asset target, the bundle is never built,
-         and RunCommand resolves to an empty RID segment (bin/Release/net11.0-macos//...) that does
-         not exist - which the platform reports as a launch failure and zero tests. Listing both
-         keeps arm64 and Intel hosts working; the samples project does the same for the same reason. -->
-    <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
+    <!-- A test module on this target is an app: the SDK builds it into a .app bundle and points the
+         run command at the apphost inside it. That bundle is only emitted for a RID-specific build,
+         and Release otherwise defaults to a universal build with no single RID, which left the run
+         command with an empty RID segment (bin/Release/net11.0-macos//...) pointing at a bundle
+         that was never built - reported as a launch failure and zero tests. Pinning the host RID
+         keeps the path real on both arm64 and Intel machines. -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</RuntimeIdentifier>
     <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
     <ApplicationId>net.syphon.tests</ApplicationId>
     <IsPackable>false</IsPackable>
     <EnableMSTestRunner>true</EnableMSTestRunner>
     <OutputType>Exe</OutputType>
-    <!-- The Apple SDK turns entry-point generation off, because an app on this target is normally
-         expected to hand-write Main and start NSApplication. A test module has no UI and the runner
-         is its entry point, so opt back in: the platform only defaults this property, an explicit
-         value wins, and the generated Main registers the runner and every extension hook. Without
-         it the module compiles to an Exe with no Main at all. -->
-    <GenerateTestingPlatformEntryPoint>true</GenerateTestingPlatformEntryPoint>
+    <!-- Entry-point generation stays off (the Apple SDK's default): Main.cs starts AppKit before
+         handing over to the runner, which the IOSurface and directory tests need. Extension
+         registration is still generated, so Main.cs names no extension itself. -->
+    <!-- Launching via `open` goes through LaunchServices, which neither propagates the parent's
+         environment nor reliably forwards arguments, so the runner never completes its handshake
+         with `dotnet test`. Launch the app binary directly instead. -->
+    <RunWithOpen>false</RunWithOpen>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
