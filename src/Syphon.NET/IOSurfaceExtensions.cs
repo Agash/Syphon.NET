@@ -29,11 +29,29 @@ public static class IOSurfaceExtensions
         surface.PixelFormat == FourCcNv12VideoRange || surface.PixelFormat == FourCcNv12FullRange;
 
     /// <summary>Number of planes (1 for packed BGRA, 2 for NV12).</summary>
-    public static int PlaneCount(this IOSurface.IOSurface surface) => (int)surface.PlaneCount;
+    /// <remarks>
+    /// IOSurface itself reports <c>0</c> for a non-planar surface and rejects its per-plane accessors
+    /// outright. A packed surface is one plane everywhere it matters (it is what <see cref="PlaneInfo"/>
+    /// describes at index 0), so it is reported as such here - matching CoreVideo's plane model.
+    /// </remarks>
+    public static int PlaneCount(this IOSurface.IOSurface surface) => Math.Max(1, (int)surface.PlaneCount);
 
     /// <summary>Dimensions and row stride of a plane (plane 0 = luma/BGRA, plane 1 = NV12 CbCr), as ints.</summary>
-    public static (int Width, int Height, int BytesPerRow) PlaneInfo(this IOSurface.IOSurface surface, int plane) =>
-        ((int)surface.GetWidth((nuint)plane), (int)surface.GetHeight((nuint)plane), (int)surface.GetBytesPerRow((nuint)plane));
+    /// <remarks>
+    /// On a non-planar surface the per-plane accessors raise <c>NSGenericException</c> ("surface is not
+    /// planar"), so plane 0 is answered from the surface itself.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The surface has no such plane.</exception>
+    public static (int Width, int Height, int BytesPerRow) PlaneInfo(this IOSurface.IOSurface surface, int plane)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(plane);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(plane, surface.PlaneCount());
+
+        if (surface.PlaneCount == 0)
+            return ((int)surface.Width, (int)surface.Height, (int)surface.BytesPerRow);
+
+        return ((int)surface.GetWidth((nuint)plane), (int)surface.GetHeight((nuint)plane), (int)surface.GetBytesPerRow((nuint)plane));
+    }
 
     // ---- Scoped CPU access -------------------------------------------------------------------------------
 

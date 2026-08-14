@@ -54,8 +54,10 @@ directory.PumpEvents(TimeSpan.FromMilliseconds(200));
 
 using var client = directory.CreateClient(index: 0);
 
-// Frames are Microsoft's IOSurface binding directly - dispose when done (it releases the retain).
-using IOSurface.IOSurface? frame = client.TryGetFrame();
+// Frames are Microsoft's IOSurface binding directly. The surface belongs to the client - read it and
+// let it go, never dispose it: a server recycles one surface, and the bindings keep a single managed
+// peer per native object, so disposing would zero the handle every later frame comes back through.
+IOSurface.IOSurface? frame = client.TryGetFrame();
 if (frame is not null)
 {
     (int w, int h) = frame.PixelSize();
@@ -78,6 +80,7 @@ using Syphon.NET;
 
 (int w, int h) = surface.PixelSize();          // int-typed dimensions
 bool bgra = surface.IsBgra();                   // format predicates (IsBgra / IsNv12)
+int planes = surface.PlaneCount();              // 1 for packed BGRA, 2 for NV12
 (int cw, int ch, int stride) = surface.PlaneInfo(1); // per-plane dims + row stride
 
 // Scoped CPU access yielding a Span; unlocks on dispose:

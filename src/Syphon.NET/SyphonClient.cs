@@ -18,6 +18,9 @@ public sealed partial class SyphonClient : IDisposable
     private nint _handle;
     private GCHandle _self;
     private bool _firstFrameLogged;
+    // Strong reference to the most recent frame so the peer that callers hold is not finalized (and the
+    // surface released) between calls.
+    private IOSurface.IOSurface? _lastFrame;
 
     /// <summary>Raised on an arbitrary thread when a new frame becomes available.</summary>
     public event Action? FrameReady;
@@ -70,16 +73,27 @@ public sealed partial class SyphonClient : IDisposable
 
     /// <summary>
     /// Return the latest frame's backing <see cref="IOSurface.IOSurface"/>, or <c>null</c> if no new frame is available
-    /// since the last call. The surface is returned retained; dispose it once consumed (it releases the
-    /// retain). Zero-copy - the bytes live in shared GPU memory.
+    /// since the last call. Zero-copy - the bytes live in shared GPU memory.
     /// </summary>
+    /// <remarks>
+    /// The surface belongs to the client: read it (for example with <see cref="IOSurfaceExtensions.CopyTightlyPacked"/>)
+    /// and let it go - do <b>not</b> dispose it. A server publishes frames into one recycled surface, so
+    /// successive calls hand back the very same managed instance, and macOS bindings keep exactly one
+    /// managed peer per native object: disposing it would zero the handle of an instance the caller, the
+    /// publishing server and every later call still share, which then reports a surface with no size, no
+    /// planes and no pixels. The client holds the frame retained until the next call or until it is
+    /// disposed; keep the pixels, not the surface, if you need them longer.
+    /// </remarks>
     public IOSurface.IOSurface? TryGetFrame()
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         nint surface = SyphonNative.sy_client_copy_new_frame(_handle);
         if (surface == 0) return null;
         if (!_firstFrameLogged) { _firstFrameLogged = true; LogFirstFrame(); }
-        return Runtime.GetINativeObject<IOSurface.IOSurface>(surface, owns: true);
+        // owns: true consumes the shim's retain. When a peer for this surface already exists the runtime
+        // returns that instance and drops the extra retain, so the count stays flat across a frame loop.
+        _lastFrame = Runtime.GetINativeObject<IOSurface.IOSurface>(surface, owns: true);
+        return _lastFrame;
     }
 
     [UnmanagedCallersOnly]
@@ -102,6 +116,9 @@ public sealed partial class SyphonClient : IDisposable
         nint h = Interlocked.Exchange(ref _handle, 0);
         if (h != 0) SyphonNative.sy_client_destroy(h);
         if (_self.IsAllocated) _self.Free();
+        // Drop the frame reference rather than disposing it: the peer may be shared with the publishing
+        // server (loopback) and with callers still holding it.
+        _lastFrame = null;
     }
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "client created")]

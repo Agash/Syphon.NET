@@ -58,7 +58,8 @@ public sealed class SyphonTransportTests
             byte[] expected = Pattern(w, h);
 
             using SyphonClient client = server.CreateLoopbackClient();
-            using IOSurface.IOSurface? surface = PollLatest(server, client, expected, w, h);
+            // Not disposed: delivered frames belong to the client (see SyphonClient.TryGetFrame).
+            IOSurface.IOSurface? surface = PollLatest(server, client, expected, w, h);
 
             Assert.IsNotNull(surface, "a published frame should be delivered to the loopback client");
             (int gotW, int gotH) = surface.PixelSize();
@@ -76,7 +77,9 @@ public sealed class SyphonTransportTests
         SyphonServer server, SyphonClient client, byte[] src, int w, int h)
     {
         // Publish repeatedly, keeping the most recent delivered frame and discarding an initial
-        // stale one by requiring a few publishes before accepting.
+        // stale one by requiring a few publishes before accepting. The frames are the client's to
+        // own - never dispose one here, or every later frame (the same managed peer) comes back with
+        // a zeroed handle.
         IOSurface.IOSurface? frame = null;
         var sw = Stopwatch.StartNew();
         int published = 0;
@@ -87,13 +90,63 @@ public sealed class SyphonTransportTests
             IOSurface.IOSurface? f = client.TryGetFrame();
             if (f is not null)
             {
-                frame?.Dispose();
                 frame = f;
                 if (published >= 4) break;
             }
             Thread.Sleep(16);
         }
         return frame;
+    }
+
+    /// <summary>
+    /// A server recycles one surface, so every delivered frame is the same native object and the
+    /// bindings hand back the same managed peer. Polling a long run of frames has to keep yielding a
+    /// readable surface - it did not while the loop disposed each frame, which zeroed that shared peer.
+    /// </summary>
+    [TestMethod]
+    [TestCategory("Transport")]
+    public void RepeatedFrames_StayReadable()
+    {
+        const int w = 32, h = 16;
+        SyphonServer server = null!;
+        try
+        {
+            server = new SyphonServer("Syphon.NET Repeat Test");
+        }
+        catch (DllNotFoundException)
+        {
+            Assert.Inconclusive("Native Syphon shim not present on this host.");
+        }
+        catch (PlatformNotSupportedException)
+        {
+            Assert.Inconclusive("No Metal device available on this host.");
+        }
+
+        using (server)
+        {
+            byte[] expected = Pattern(w, h);
+            using SyphonClient client = server.CreateLoopbackClient();
+
+            int received = 0;
+            var sw = Stopwatch.StartNew();
+            while (received < 10 && sw.Elapsed < TimeSpan.FromSeconds(10))
+            {
+                server.PublishPixels(expected, w, h, CVPixelFormatType.CV32BGRA);
+                IOSurface.IOSurface? frame = client.TryGetFrame();
+                if (frame is null) { Thread.Sleep(16); continue; }
+
+                received++;
+                (int gotW, int gotH) = frame.PixelSize();
+                Assert.AreEqual(w, gotW, $"frame {received} should still report its width");
+                Assert.AreEqual(h, gotH, $"frame {received} should still report its height");
+
+                byte[] got = new byte[w * h * 4];
+                frame.CopyTightlyPacked(got);
+                CollectionAssert.AreEqual(expected, got, $"frame {received} must round-trip");
+            }
+
+            Assert.AreEqual(10, received, "ten published frames should have been delivered");
+        }
     }
 
     private static byte[] Pattern(int w, int h)
@@ -157,6 +210,74 @@ public sealed class IOSurfaceExtensionsTests
             int written = surface.CopyTightlyPacked(got);
             Assert.AreEqual(w * h * 4, written);
             CollectionAssert.AreEqual(pattern, got, "WritePixels/CopyTightlyPacked must round-trip byte-exact");
+        }
+    }
+
+    /// <summary>
+    /// IOSurface reports no planes for a packed surface and raises an Objective-C exception from its
+    /// per-plane accessors; the helpers present that surface as the single plane it is.
+    /// </summary>
+    [TestMethod]
+    [TestCategory("Transport")]
+    public void PlaneInfo_OnPackedBgra_DescribesTheWholeSurface()
+    {
+        const int w = 48, h = 32;
+        SyphonServer server = null!;
+        try
+        {
+            server = new SyphonServer("Syphon.NET Plane Test");
+        }
+        catch (DllNotFoundException)
+        {
+            Assert.Inconclusive("Native Syphon shim not present on this host.");
+        }
+        catch (PlatformNotSupportedException)
+        {
+            Assert.Inconclusive("No Metal device available on this host.");
+        }
+
+        using (server)
+        {
+            IOSurface.IOSurface surface = server.AcquireSurface(w, h, CVPixelFormatType.CV32BGRA);
+            Assert.AreEqual(1, surface.PlaneCount());
+
+            (int pw, int ph, int stride) = surface.PlaneInfo(0);
+            Assert.AreEqual(w, pw);
+            Assert.AreEqual(h, ph);
+            Assert.IsTrue(stride >= w * 4, "the stride must cover a row of pixels");
+
+            Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => surface.PlaneInfo(1));
+        }
+    }
+
+    /// <summary>
+    /// The server recycles its surface, and the bindings keep one managed peer per native object, so
+    /// repeated acquires are the same instance - which is why callers must not dispose it.
+    /// </summary>
+    [TestMethod]
+    [TestCategory("Transport")]
+    public void AcquireSurface_ReturnsTheRecycledInstance()
+    {
+        SyphonServer server = null!;
+        try
+        {
+            server = new SyphonServer("Syphon.NET Recycle Test");
+        }
+        catch (DllNotFoundException)
+        {
+            Assert.Inconclusive("Native Syphon shim not present on this host.");
+        }
+        catch (PlatformNotSupportedException)
+        {
+            Assert.Inconclusive("No Metal device available on this host.");
+        }
+
+        using (server)
+        {
+            IOSurface.IOSurface first = server.AcquireSurface(64, 64);
+            IOSurface.IOSurface second = server.AcquireSurface(64, 64);
+            Assert.AreSame(first, second);
+            Assert.AreEqual((64, 64), second.PixelSize());
         }
     }
 
