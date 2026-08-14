@@ -15,9 +15,13 @@ on:
 permissions:
   contents: write
 
+# Split across two runners, unlike the other repos here. Everything in this repo targets
+# net11.0-macos, so only a macOS host with the workload can restore it; the detection action ships a
+# linux-x64 binary and dies with ENOEXEC anywhere else. So restore on macOS, carry the restore
+# output over, and scan on Linux.
 jobs:
-  submit:
-    name: Submit dependency graph
+  restore:
+    name: Restore
     runs-on: macos-26
     steps:
       - name: Checkout code
@@ -38,6 +42,30 @@ jobs:
         # submits an empty snapshot. Restore is what turns PackageReference into resolved versions
         # and transitive dependencies, which is the whole reason to submit a graph by hand.
         run: dotnet restore
+
+      - name: Upload the restore output
+        uses: actions/upload-artifact@v7
+        with:
+          name: restore-assets
+          if-no-files-found: error
+          retention-days: 1
+          # Only what the scan reads. The rest of obj/ is build output nobody downstream needs.
+          path: "**/obj/project.assets.json"
+
+  submit:
+    name: Submit dependency graph
+    needs: [restore]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download the restore output
+        # Lands the assets files back at their original paths, next to the projects they belong to,
+        # which is where the scan looks for them.
+        uses: actions/download-artifact@v8
+        with:
+          name: restore-assets
 
       - name: Detect and submit dependencies
         uses: advanced-security/component-detection-dependency-submission-action@v0.1.4
