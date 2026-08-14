@@ -6,10 +6,13 @@
     <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
     <ApplicationId>net.syphon.tests</ApplicationId>
     <IsPackable>false</IsPackable>
-    <EnableMSTestRunner>true</EnableMSTestRunner>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Deliberately not on the Microsoft.Testing.Platform runner, unlike every other repo here.
+         A net11.0-macos test project builds into a .app bundle, and MTP tries to launch an
+         executable inside it that a plain build does not produce, so the run reports zero tests.
+         That also rules out MTP's --coverage, which is why this repo reports no coverage. -->
     <!-- CA1515: test types do not need to be internal -->
     <NoWarn>CA1515</NoWarn>
   </PropertyGroup>
@@ -18,7 +21,6 @@
     <PackageReference Include="Microsoft.Testing.Platform.MSBuild" />
     <PackageReference Include="MSTest.TestAdapter" />
     <PackageReference Include="MSTest.TestFramework" />
-    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" />
   </ItemGroup>
 
   <ItemGroup>
