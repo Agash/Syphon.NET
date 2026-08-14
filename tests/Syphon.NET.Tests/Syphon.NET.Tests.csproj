@@ -6,6 +6,7 @@
     <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
     <ApplicationId>net.syphon.tests</ApplicationId>
     <IsPackable>false</IsPackable>
+    <EnableMSTestRunner>true</EnableMSTestRunner>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
