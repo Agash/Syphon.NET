@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <!-- macOS-only library: the Syphon framework is macOS-only and the consumers run on the net*-macos head,
          so target net11.0-macos directly (Microsoft Metal/CoreVideo/IOSurface bindings available; the ObjC
@@ -20,7 +20,6 @@
     <EnablePackageValidation>true</EnablePackageValidation>
     <MinVerTagPrefix>v</MinVerTagPrefix>
     <IsPackable>true</IsPackable>
-    <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <NoWarn>CA1515;CA1050</NoWarn>
   </PropertyGroup>
