@@ -18,7 +18,7 @@ permissions:
 jobs:
   submit:
     name: Submit dependency graph
-    runs-on: ubuntu-latest
+    runs-on: macos-26
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -29,6 +29,15 @@ jobs:
           dotnet-version: |
             10.0.x
             11.0.x
+
+      - name: Install the macOS workload
+        run: dotnet workload install macos
+
+      - name: Restore
+        # component-detection reads obj/project.assets.json; on a bare checkout it finds nothing and
+        # submits an empty snapshot. Restore is what turns PackageReference into resolved versions
+        # and transitive dependencies, which is the whole reason to submit a graph by hand.
+        run: dotnet restore
 
       - name: Detect and submit dependencies
         uses: advanced-security/component-detection-dependency-submission-action@v0.1.4
