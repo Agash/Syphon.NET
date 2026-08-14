@@ -55,7 +55,7 @@ jobs:
 
       - name: Diagnose test host properties
         run: |
-          dotnet msbuild tests/Syphon.NET.Tests/Syphon.NET.Tests.csproj -c Release \
+          dotnet msbuild tests/Syphon.NET.Tests/Syphon.NET.Tests.csproj -p:Configuration=Release \
             -getProperty:OutputType,IsTestingPlatformApplication,GenerateTestingPlatformEntryPoint,EnableMSTestRunner,RuntimeIdentifier,RunCommand,OutputPath
 
       - name: Build
