@@ -53,21 +53,8 @@ jobs:
       - name: Restore
         run: dotnet restore Syphon.NET.slnx
 
-      - name: Diagnose test host properties
-        run: |
-          dotnet msbuild tests/Syphon.NET.Tests/Syphon.NET.Tests.csproj -p:Configuration=Release \
-            -getProperty:OutputType,IsTestingPlatformApplication,GenerateTestingPlatformEntryPoint,EnableMSTestRunner,RuntimeIdentifier,RunCommand,OutputPath
-
       - name: Build
         run: dotnet build Syphon.NET.slnx --no-restore -c Release
-
-      - name: Diagnose test host layout
-        run: |
-          APP=tests/Syphon.NET.Tests/bin/Release/net11.0-macos/osx-arm64/Syphon.NET.Tests.app
-          echo "--- shim in bundle ---"
-          find "$APP" -name 'libsyphon_shim.dylib'
-          echo "--- apphost, transport filter ---"
-          "$APP/Contents/MacOS/Syphon.NET.Tests" --filter "TestCategory=Transport" || echo "apphost exit=$?"
 
       - name: Test (value-type)
         run: dotnet test Syphon.NET.slnx --no-build -c Release -- --coverage --coverage-settings coverage.settings.xml --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
