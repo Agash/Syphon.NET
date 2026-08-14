@@ -21,7 +21,7 @@ jobs:
     runs-on: macos-26
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0        # MinVer needs full history
           submodules: recursive # Syphon framework source for the native shim
@@ -35,7 +35,7 @@ jobs:
           xcode-select -p
           xcodebuild -version
 
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@v6
         with:
           # net11.0 needs the .NET 11 preview SDK alongside .NET 10; global.json selects it.
           dotnet-version: |
@@ -135,7 +135,7 @@ jobs:
         # directory), proving frames cross the real mach/IOSurface boundary byte-exact.
         run: dotnet run --project samples/Syphon.NET.Peer -c Release --no-build -- crosstest
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"   # syphon-python ships wheels for cp38-cp312 only
 
@@ -209,7 +209,7 @@ jobs:
           name: nuget-package
           path: ${{ env.NuGetDirectory }}
 
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@v6
 
       - name: NuGet login (OIDC)
         id: login
