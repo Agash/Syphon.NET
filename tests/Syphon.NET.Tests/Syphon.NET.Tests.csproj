@@ -17,6 +17,7 @@
     <PackageReference Include="Microsoft.Testing.Platform.MSBuild" />
     <PackageReference Include="MSTest.TestAdapter" />
     <PackageReference Include="MSTest.TestFramework" />
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" />
   </ItemGroup>
 
   <ItemGroup>

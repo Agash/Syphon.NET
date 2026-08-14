@@ -19,3 +19,6 @@ nuget/
 native/osx-arm64/Syphon.framework/
 native/osx-x64/Syphon.framework/
 native/build/
+
+# Test run output (coverage reports)
+TestResults/
