@@ -68,6 +68,6 @@ jobs:
           name: restore-assets
 
       - name: Detect and submit dependencies
-        uses: advanced-security/component-detection-dependency-submission-action@v0.1.4
+        uses: advanced-security/component-detection-dependency-submission-action@v0.1.6
         with:
           filePath: .
