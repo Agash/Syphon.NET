@@ -3,6 +3,7 @@
     <OutputType>Exe</OutputType>
     <!-- macOS-only: the library binds Microsoft's IOSurface/CoreVideo/Metal frameworks. -->
     <TargetFramework>net11.0-macos</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- A -macos Exe gets a RID resolved at build (the app-bundle default is osx-x64); the slnx-level restore
          does not pre-emit that RID asset target, so build hard-fails NETSDK1047 unless the candidate RIDs are
          declared here. Listing both keeps restore RID-complete for arm64 and Intel runners alike. -->
