@@ -42,7 +42,9 @@ internal sealed class TestRunnerDelegate : NSApplicationDelegate
             string[] commandLine = Environment.GetCommandLineArgs();
             string[] arguments = commandLine.Length > 1 ? commandLine[1..] : [];
 
-            ITestApplicationBuilder builder = await TestApplication.CreateBuilderAsync(arguments).ConfigureAwait(false);
+            ITestApplicationBuilder builder = await TestApplication
+                .CreateBuilderAsync(arguments)
+                .ConfigureAwait(false);
             builder.AddSelfRegisteredExtensions(arguments);
 
             using ITestApplication application = await builder.BuildAsync().ConfigureAwait(false);

@@ -86,12 +86,17 @@ static bool Loopback(int w, int h, out string detail)
         if (f is not null)
         {
             frame = f;
-            if (published >= 4) break;
+            if (published >= 4)
+                break;
         }
         Thread.Sleep(16);
     }
 
-    if (frame is null) { detail = "no frame delivered"; return false; }
+    if (frame is null)
+    {
+        detail = "no frame delivered";
+        return false;
+    }
 
     {
         (int gotW, int gotH) = frame.PixelSize();
@@ -107,7 +112,9 @@ static bool Loopback(int w, int h, out string detail)
         if (mismatch >= 0)
         {
             using (var locked = frame.LockBytes(readOnly: true))
-                Log($"    stride={locked.BytesPerRow} (tight={w * 4}), recv format 0x{frame.PixelFormat:X8}");
+                Log(
+                    $"    stride={locked.BytesPerRow} (tight={w * 4}), recv format 0x{frame.PixelFormat:X8}"
+                );
             Log($"    expected[0..32]: {Hex(expected, 32)}");
             Log($"    got     [0..32]: {Hex(got, 32)}");
             detail = $"mismatch at {mismatch} (expected {expected[mismatch]}, got {got[mismatch]})";
@@ -124,9 +131,9 @@ static byte[] SwapRedBlue(byte[] rgba)
     byte[] bgra = new byte[rgba.Length];
     for (int i = 0; i < rgba.Length; i += 4)
     {
-        bgra[i] = rgba[i + 2];     // B <- R
+        bgra[i] = rgba[i + 2]; // B <- R
         bgra[i + 1] = rgba[i + 1]; // G
-        bgra[i + 2] = rgba[i];     // R <- B
+        bgra[i + 2] = rgba[i]; // R <- B
         bgra[i + 3] = rgba[i + 3]; // A
     }
     return bgra;
@@ -136,9 +143,20 @@ static void DirectoryProbe(string name)
 {
     Log("step: directory discovery (live server + pumped run loop)");
     SyphonServer server;
-    try { server = new SyphonServer(name); }
-    catch (DllNotFoundException) { Log("DIRECTORY: native shim missing"); return; }
-    catch (PlatformNotSupportedException) { Log("DIRECTORY: no Metal device"); return; }
+    try
+    {
+        server = new SyphonServer(name);
+    }
+    catch (DllNotFoundException)
+    {
+        Log("DIRECTORY: native shim missing");
+        return;
+    }
+    catch (PlatformNotSupportedException)
+    {
+        Log("DIRECTORY: no Metal device");
+        return;
+    }
 
     using (server)
     {
@@ -174,14 +192,27 @@ static int ServerMode(string[] cmdArgs)
     string readyFile = Arg(cmdArgs, "--ready-file", "");
 
     SyphonServer server;
-    try { server = new SyphonServer(name); }
-    catch (DllNotFoundException) { Log("server: native shim missing"); return 3; }
-    catch (PlatformNotSupportedException) { Log("server: no Metal device"); return 2; }
+    try
+    {
+        server = new SyphonServer(name);
+    }
+    catch (DllNotFoundException)
+    {
+        Log("server: native shim missing");
+        return 3;
+    }
+    catch (PlatformNotSupportedException)
+    {
+        Log("server: no Metal device");
+        return 2;
+    }
 
     using (server)
     {
-        if (descFile.Length > 0) File.WriteAllBytes(descFile, server.ExportDescription());
-        if (readyFile.Length > 0) File.WriteAllText(readyFile, "ready");
+        if (descFile.Length > 0)
+            File.WriteAllBytes(descFile, server.ExportDescription());
+        if (readyFile.Length > 0)
+            File.WriteAllText(readyFile, "ready");
         Log($"[server] publishing '{name}' {w}x{h} for {seconds}s");
         byte[] src = Pattern(w, h);
         var sw = Stopwatch.StartNew();
@@ -201,16 +232,29 @@ static int ServerMode(string[] cmdArgs)
 static int CrossTest()
 {
     Log("== cross-process transport ==");
-    const int w = 64, h = 64;
+    const int w = 64,
+        h = 64;
     string dir = Path.Combine(Path.GetTempPath(), "syphon-xtest-" + Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(dir);
     string descFile = Path.Combine(dir, "desc.bin");
     string readyFile = Path.Combine(dir, "ready");
     var ci = System.Globalization.CultureInfo.InvariantCulture;
 
-    Process child = SpawnSelf("server", "--name", "Syphon.NET XProc",
-        "--w", w.ToString(ci), "--h", h.ToString(ci), "--seconds", "30",
-        "--desc-file", descFile, "--ready-file", readyFile);
+    Process child = SpawnSelf(
+        "server",
+        "--name",
+        "Syphon.NET XProc",
+        "--w",
+        w.ToString(ci),
+        "--h",
+        h.ToString(ci),
+        "--seconds",
+        "30",
+        "--desc-file",
+        descFile,
+        "--ready-file",
+        readyFile
+    );
     try
     {
         var sw = Stopwatch.StartNew();
@@ -222,14 +266,25 @@ static int CrossTest()
             Log($"CROSS: server process exited early (code {child.ExitCode})");
             return child.ExitCode == 2 ? 2 : 1;
         }
-        if (!File.Exists(readyFile)) { Log("CROSS: server not ready in time"); return 1; }
+        if (!File.Exists(readyFile))
+        {
+            Log("CROSS: server not ready in time");
+            return 1;
+        }
 
         byte[] desc = File.ReadAllBytes(descFile);
         Log($"CROSS: received description ({desc.Length} bytes); connecting client");
 
         SyphonClient client;
-        try { client = SyphonClient.Connect(desc); }
-        catch (PlatformNotSupportedException) { Log("CROSS: no Metal device"); return 2; }
+        try
+        {
+            client = SyphonClient.Connect(desc);
+        }
+        catch (PlatformNotSupportedException)
+        {
+            Log("CROSS: no Metal device");
+            return 2;
+        }
 
         using (client)
         {
@@ -240,11 +295,20 @@ static int CrossTest()
             while (psw.Elapsed < TimeSpan.FromSeconds(8))
             {
                 IOSurface.IOSurface? f = client.TryGetFrame();
-                if (f is not null) { frame = f; if (++got >= 3) break; }
+                if (f is not null)
+                {
+                    frame = f;
+                    if (++got >= 3)
+                        break;
+                }
                 Thread.Sleep(16);
             }
 
-            if (frame is null) { Log("CROSS: no frame delivered across processes"); return 1; }
+            if (frame is null)
+            {
+                Log("CROSS: no frame delivered across processes");
+                return 1;
+            }
             {
                 (int gotW, int gotH) = frame.PixelSize();
                 if (gotW != w || gotH != h)
@@ -267,8 +331,17 @@ static int CrossTest()
     }
     finally
     {
-        try { if (!child.HasExited) child.Kill(true); } catch (InvalidOperationException) { }
-        try { Directory.Delete(dir, true); } catch (IOException) { }
+        try
+        {
+            if (!child.HasExited)
+                child.Kill(true);
+        }
+        catch (InvalidOperationException) { }
+        try
+        {
+            Directory.Delete(dir, true);
+        }
+        catch (IOException) { }
     }
 }
 
@@ -289,10 +362,18 @@ static int ForeignClient(string[] cmdArgs)
         IReadOnlyList<SyphonServerDescription> servers = directory.GetServers();
         for (int i = 0; i < servers.Count; i++)
         {
-            if (servers[i].Name == name) { idx = i; break; }
+            if (servers[i].Name == name)
+            {
+                idx = i;
+                break;
+            }
         }
     }
-    if (idx < 0) { Log($"[cs-client] foreign server '{name}' not discovered"); return 3; }
+    if (idx < 0)
+    {
+        Log($"[cs-client] foreign server '{name}' not discovered");
+        return 3;
+    }
     Log($"[cs-client] discovered '{name}' at index {idx}; connecting");
 
     using SyphonClient client = directory.CreateClient(idx);
@@ -301,9 +382,14 @@ static int ForeignClient(string[] cmdArgs)
     while (psw.Elapsed < TimeSpan.FromSeconds(timeout) && frame is null)
     {
         frame = client.TryGetFrame();
-        if (frame is null) directory.PumpEvents(TimeSpan.FromMilliseconds(50));
+        if (frame is null)
+            directory.PumpEvents(TimeSpan.FromMilliseconds(50));
     }
-    if (frame is null) { Log("[cs-client] no frame received from foreign server"); return 4; }
+    if (frame is null)
+    {
+        Log("[cs-client] no frame received from foreign server");
+        return 4;
+    }
 
     {
         (int w, int h) = frame.PixelSize();
@@ -313,8 +399,16 @@ static int ForeignClient(string[] cmdArgs)
         Log($"[cs-client] recv {w}x{h} format 0x{frame.PixelFormat:X8}");
         Log($"[cs-client] expected[0..8] {Hex(expected, 8)}");
         Log($"[cs-client] got     [0..8] {Hex(got, 8)}");
-        if (FirstMismatch(expected, got) < 0) { Log("[cs-client] PASS byte-exact"); return 0; }
-        if (FirstMismatch(SwapRedBlue(expected), got) < 0) { Log("[cs-client] PASS (R/B swapped)"); return 0; }
+        if (FirstMismatch(expected, got) < 0)
+        {
+            Log("[cs-client] PASS byte-exact");
+            return 0;
+        }
+        if (FirstMismatch(SwapRedBlue(expected), got) < 0)
+        {
+            Log("[cs-client] PASS (R/B swapped)");
+            return 0;
+        }
         Log("[cs-client] MISMATCH");
         return 1;
     }
@@ -333,15 +427,18 @@ static Process SpawnSelf(params string[] childArgs)
     {
         psi.FileName = exe;
     }
-    foreach (string a in childArgs) psi.ArgumentList.Add(a);
-    return Process.Start(psi) ?? throw new InvalidOperationException("failed to spawn child process");
+    foreach (string a in childArgs)
+        psi.ArgumentList.Add(a);
+    return Process.Start(psi)
+        ?? throw new InvalidOperationException("failed to spawn child process");
 }
 
 static string Arg(string[] a, string key, string fallback)
 {
     for (int i = 0; i < a.Length - 1; i++)
     {
-        if (a[i] == key) return a[i + 1];
+        if (a[i] == key)
+            return a[i + 1];
     }
     return fallback;
 }
@@ -376,7 +473,8 @@ static int FirstMismatch(byte[] a, byte[] b)
 {
     for (int i = 0; i < a.Length; i++)
     {
-        if (a[i] != b[i]) return i;
+        if (a[i] != b[i])
+            return i;
     }
     return -1;
 }

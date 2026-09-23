@@ -13,10 +13,12 @@ internal static class SyphonRuntime
     /// </summary>
     internal static void EnsureInitialized()
     {
-        if (Volatile.Read(ref s_initialized) != 0) return;
+        if (Volatile.Read(ref s_initialized) != 0)
+            return;
         if (SyphonNative.sy_init() != 0)
             throw new PlatformNotSupportedException(
-                "Syphon requires a Metal-capable macOS device; none was available.");
+                "Syphon requires a Metal-capable macOS device; none was available."
+            );
         Volatile.Write(ref s_initialized, 1);
     }
 }
