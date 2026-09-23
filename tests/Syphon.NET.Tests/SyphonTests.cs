@@ -61,11 +61,17 @@ public sealed class SyphonTransportTests
             // Not disposed: delivered frames belong to the client (see SyphonClient.TryGetFrame).
             IOSurface.IOSurface? surface = PollLatest(server, client, expected, w, h);
 
-            Assert.IsNotNull(surface, "a published frame should be delivered to the loopback client");
+            Assert.IsNotNull(
+                surface,
+                "a published frame should be delivered to the loopback client"
+            );
             (int gotW, int gotH) = surface.PixelSize();
             Assert.AreEqual(w, gotW);
             Assert.AreEqual(h, gotH);
-            Assert.IsTrue(surface.IsBgra(), "Syphon delivers frames in its canonical BGRA surface format");
+            Assert.IsTrue(
+                surface.IsBgra(),
+                "Syphon delivers frames in its canonical BGRA surface format"
+            );
 
             byte[] got = new byte[w * h * 4];
             surface.CopyTightlyPacked(got);
@@ -74,7 +80,12 @@ public sealed class SyphonTransportTests
     }
 
     private static IOSurface.IOSurface? PollLatest(
-        SyphonServer server, SyphonClient client, byte[] src, int w, int h)
+        SyphonServer server,
+        SyphonClient client,
+        byte[] src,
+        int w,
+        int h
+    )
     {
         // Publish repeatedly, keeping the most recent delivered frame and discarding an initial
         // stale one by requiring a few publishes before accepting. The frames are the client's to
@@ -91,7 +102,8 @@ public sealed class SyphonTransportTests
             if (f is not null)
             {
                 frame = f;
-                if (published >= 4) break;
+                if (published >= 4)
+                    break;
             }
             Thread.Sleep(16);
         }
@@ -107,7 +119,8 @@ public sealed class SyphonTransportTests
     [TestCategory("Transport")]
     public void RepeatedFrames_StayReadable()
     {
-        const int w = 32, h = 16;
+        const int w = 32,
+            h = 16;
         SyphonServer server = null!;
         try
         {
@@ -133,7 +146,11 @@ public sealed class SyphonTransportTests
             {
                 server.PublishPixels(expected, w, h, CVPixelFormatType.CV32BGRA);
                 IOSurface.IOSurface? frame = client.TryGetFrame();
-                if (frame is null) { Thread.Sleep(16); continue; }
+                if (frame is null)
+                {
+                    Thread.Sleep(16);
+                    continue;
+                }
 
                 received++;
                 (int gotW, int gotH) = frame.PixelSize();
@@ -179,7 +196,8 @@ public sealed class IOSurfaceExtensionsTests
     [TestCategory("Transport")]
     public void WritePixels_ThenCopyTightlyPacked_RoundTripsByteExact()
     {
-        const int w = 48, h = 32;
+        const int w = 48,
+            h = 32;
         SyphonServer server = null!;
         try
         {
@@ -209,7 +227,11 @@ public sealed class IOSurfaceExtensionsTests
             byte[] got = new byte[w * h * 4];
             int written = surface.CopyTightlyPacked(got);
             Assert.AreEqual(w * h * 4, written);
-            CollectionAssert.AreEqual(pattern, got, "WritePixels/CopyTightlyPacked must round-trip byte-exact");
+            CollectionAssert.AreEqual(
+                pattern,
+                got,
+                "WritePixels/CopyTightlyPacked must round-trip byte-exact"
+            );
         }
     }
 
@@ -221,7 +243,8 @@ public sealed class IOSurfaceExtensionsTests
     [TestCategory("Transport")]
     public void PlaneInfo_OnPackedBgra_DescribesTheWholeSurface()
     {
-        const int w = 48, h = 32;
+        const int w = 48,
+            h = 32;
         SyphonServer server = null!;
         try
         {
@@ -284,7 +307,8 @@ public sealed class IOSurfaceExtensionsTests
     private static byte[] Pattern(int w, int h)
     {
         byte[] p = new byte[w * h * 4];
-        for (int i = 0; i < p.Length; i++) p[i] = (byte)(i * 7 + 3);
+        for (int i = 0; i < p.Length; i++)
+            p[i] = (byte)(i * 7 + 3);
         return p;
     }
 }

@@ -18,6 +18,7 @@ public sealed partial class SyphonClient : IDisposable
     private nint _handle;
     private GCHandle _self;
     private bool _firstFrameLogged;
+
     // Strong reference to the most recent frame so the peer that callers hold is not finalized (and the
     // surface released) between calls.
     private IOSurface.IOSurface? _lastFrame;
@@ -25,11 +26,17 @@ public sealed partial class SyphonClient : IDisposable
     /// <summary>Raised on an arbitrary thread when a new frame becomes available.</summary>
     public event Action? FrameReady;
 
-    private unsafe SyphonClient(Action? onFrameReady, Func<nint, nint, nint> createNative, string failure, ILogger logger)
+    private unsafe SyphonClient(
+        Action? onFrameReady,
+        Func<nint, nint, nint> createNative,
+        string failure,
+        ILogger logger
+    )
     {
         SyphonRuntime.EnsureInitialized();
         _logger = logger;
-        if (onFrameReady is not null) FrameReady += onFrameReady;
+        if (onFrameReady is not null)
+            FrameReady += onFrameReady;
 
         _self = GCHandle.Alloc(this, GCHandleType.Weak);
         nint cb = (nint)(delegate* unmanaged<nint, void>)&OnNewFrame;
@@ -42,15 +49,26 @@ public sealed partial class SyphonClient : IDisposable
         LogCreated();
     }
 
-    internal static SyphonClient FromDirectory(nint directory, int index, Action? onFrameReady, ILogger logger) =>
-        new(onFrameReady,
+    internal static SyphonClient FromDirectory(
+        nint directory,
+        int index,
+        Action? onFrameReady,
+        ILogger logger
+    ) =>
+        new(
+            onFrameReady,
             (cb, ctx) => SyphonNative.sy_client_create(directory, index, cb, ctx),
-            $"Failed to create a Syphon client for server index {index} (stale or out of range).", logger);
+            $"Failed to create a Syphon client for server index {index} (stale or out of range).",
+            logger
+        );
 
     internal static SyphonClient ForServer(nint server, Action? onFrameReady, ILogger logger) =>
-        new(onFrameReady,
+        new(
+            onFrameReady,
             (cb, ctx) => SyphonNative.sy_client_create_for_server(server, cb, ctx),
-            "Failed to create a loopback Syphon client for the server.", logger);
+            "Failed to create a loopback Syphon client for the server.",
+            logger
+        );
 
     /// <summary>
     /// Connect to a server using a description exported via <see cref="SyphonServer.ExportDescription"/>,
@@ -59,13 +77,19 @@ public sealed partial class SyphonClient : IDisposable
     /// <param name="description">A description blob from <see cref="SyphonServer.ExportDescription"/>.</param>
     /// <param name="onFrameReady">Optional handler raised when a new frame arrives.</param>
     /// <param name="loggerFactory">Optional factory for Debug/Trace diagnostics; omit for none.</param>
-    public static SyphonClient Connect(ReadOnlySpan<byte> description, Action? onFrameReady = null, ILoggerFactory? loggerFactory = null)
+    public static SyphonClient Connect(
+        ReadOnlySpan<byte> description,
+        Action? onFrameReady = null,
+        ILoggerFactory? loggerFactory = null
+    )
     {
         byte[] desc = description.ToArray();
-        return new SyphonClient(onFrameReady,
+        return new SyphonClient(
+            onFrameReady,
             (cb, ctx) => SyphonNative.sy_client_create_from_description(desc, desc.Length, cb, ctx),
             "Failed to connect a Syphon client from the exported description.",
-            (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("Syphon.NET.Client"));
+            (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("Syphon.NET.Client")
+        );
     }
 
     /// <summary>True while connected to a live server.</summary>
@@ -88,8 +112,13 @@ public sealed partial class SyphonClient : IDisposable
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         nint surface = SyphonNative.sy_client_copy_new_frame(_handle);
-        if (surface == 0) return null;
-        if (!_firstFrameLogged) { _firstFrameLogged = true; LogFirstFrame(); }
+        if (surface == 0)
+            return null;
+        if (!_firstFrameLogged)
+        {
+            _firstFrameLogged = true;
+            LogFirstFrame();
+        }
         // owns: true consumes the shim's retain. When a peer for this surface already exists the runtime
         // returns that instance and drops the extra retain, so the count stays flat across a frame loop.
         _lastFrame = Runtime.GetINativeObject<IOSurface.IOSurface>(surface, owns: true);
@@ -114,8 +143,10 @@ public sealed partial class SyphonClient : IDisposable
     public void Dispose()
     {
         nint h = Interlocked.Exchange(ref _handle, 0);
-        if (h != 0) SyphonNative.sy_client_destroy(h);
-        if (_self.IsAllocated) _self.Free();
+        if (h != 0)
+            SyphonNative.sy_client_destroy(h);
+        if (_self.IsAllocated)
+            _self.Free();
         // Drop the frame reference rather than disposing it: the peer may be shared with the publishing
         // server (loopback) and with callers still holding it.
         _lastFrame = null;

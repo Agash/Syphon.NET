@@ -35,7 +35,12 @@ internal static partial class SyphonNative
     internal static partial int sy_server_publish_surface(nint server, nint surface, int flipped);
 
     [LibraryImport(Lib)]
-    internal static partial nint sy_server_acquire_surface(nint server, uint width, uint height, uint pixelFormat);
+    internal static partial nint sy_server_acquire_surface(
+        nint server,
+        uint width,
+        uint height,
+        uint pixelFormat
+    );
 
     [LibraryImport(Lib)]
     internal static partial int sy_server_publish_current(nint server, int flipped);
@@ -52,7 +57,14 @@ internal static partial class SyphonNative
     internal static partial int sy_directory_count(nint dir);
 
     [LibraryImport(Lib)]
-    internal static partial int sy_directory_get(nint dir, int index, byte[]? uuid, byte[]? appName, byte[]? name, int bufLen);
+    internal static partial int sy_directory_get(
+        nint dir,
+        int index,
+        byte[]? uuid,
+        byte[]? appName,
+        byte[]? name,
+        int bufLen
+    );
 
     // ---- Client ----
 
@@ -66,7 +78,12 @@ internal static partial class SyphonNative
     internal static partial int sy_server_copy_description(nint server, byte[]? buf, int bufLen);
 
     [LibraryImport(Lib)]
-    internal static partial nint sy_client_create_from_description(byte[] desc, int descLen, nint cb, nint ctx);
+    internal static partial nint sy_client_create_from_description(
+        byte[] desc,
+        int descLen,
+        nint cb,
+        nint ctx
+    );
 
     [LibraryImport(Lib)]
     internal static partial void sy_client_destroy(nint client);

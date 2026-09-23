@@ -59,6 +59,11 @@ jobs:
       - name: Restore
         run: dotnet restore Syphon.NET.slnx
 
+      - name: Check formatting
+        run: |
+          dotnet tool restore
+          dotnet csharpier check .
+
       - name: Build
         run: dotnet build Syphon.NET.slnx --no-restore -c Release
 

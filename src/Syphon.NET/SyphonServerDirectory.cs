@@ -77,13 +77,19 @@ public sealed partial class SyphonServerDirectory : IDisposable
     public SyphonClient CreateClient(int index, Action? onFrameReady = null)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
-        return SyphonClient.FromDirectory(_handle, index, onFrameReady, _loggerFactory.CreateLogger("Syphon.NET.Client"));
+        return SyphonClient.FromDirectory(
+            _handle,
+            index,
+            onFrameReady,
+            _loggerFactory.CreateLogger("Syphon.NET.Client")
+        );
     }
 
     private static string Decode(byte[] buffer)
     {
         int end = Array.IndexOf<byte>(buffer, 0);
-        if (end < 0) end = buffer.Length;
+        if (end < 0)
+            end = buffer.Length;
         return Encoding.UTF8.GetString(buffer, 0, end);
     }
 
@@ -91,7 +97,8 @@ public sealed partial class SyphonServerDirectory : IDisposable
     public void Dispose()
     {
         nint h = Interlocked.Exchange(ref _handle, 0);
-        if (h != 0) SyphonNative.sy_directory_destroy(h);
+        if (h != 0)
+            SyphonNative.sy_directory_destroy(h);
     }
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "server directory opened")]

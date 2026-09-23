@@ -19,12 +19,16 @@ internal static class AssemblyInitializer
             typeof(AssemblyInitializer).Assembly,
             static (name, asm, path) =>
             {
-                if (name is not Interop.SyphonNative.Lib) return 0;
+                if (name is not Interop.SyphonNative.Lib)
+                    return 0;
                 // Packaged as runtimes/osx-*/native/libsyphon_shim.dylib (resolved by the runtime),
                 // or copied next to the assembly for local builds and tests.
-                if (NativeLibrary.TryLoad("libsyphon_shim.dylib", asm, path, out nint h)) return h;
-                if (NativeLibrary.TryLoad("syphon_shim", asm, path, out h)) return h;
+                if (NativeLibrary.TryLoad("libsyphon_shim.dylib", asm, path, out nint h))
+                    return h;
+                if (NativeLibrary.TryLoad("syphon_shim", asm, path, out h))
+                    return h;
                 return 0;
-            });
+            }
+        );
     }
 }

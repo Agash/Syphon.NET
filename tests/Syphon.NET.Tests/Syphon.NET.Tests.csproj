@@ -9,7 +9,8 @@
          command with an empty RID segment (bin/Release/net11.0-macos//...) pointing at a bundle
          that was never built - reported as a launch failure and zero tests. Pinning the host RID
          keeps the path real on both arm64 and Intel machines. -->
-    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''"
+      >$(NETCoreSdkPortableRuntimeIdentifier)</RuntimeIdentifier>
     <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
     <ApplicationId>net.syphon.tests</ApplicationId>
     <IsPackable>false</IsPackable>

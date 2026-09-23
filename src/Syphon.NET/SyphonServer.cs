@@ -26,6 +26,7 @@ public sealed partial class SyphonServer : IDisposable
     private readonly ILogger _logger;
     private nint _handle;
     private bool _firstPublishLogged;
+
     // Strong reference to the surface most recently handed out by AcquireSurface; see the note there.
     private IOSurface.IOSurface? _currentSurface;
 
@@ -36,7 +37,9 @@ public sealed partial class SyphonServer : IDisposable
     {
         SyphonRuntime.EnsureInitialized();
         Name = name;
-        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger($"Syphon.NET.Server.{name ?? "(unnamed)"}");
+        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger(
+            $"Syphon.NET.Server.{name ?? "(unnamed)"}"
+        );
         _handle = SyphonNative.sy_server_create(name);
         if (_handle == 0)
             throw new InvalidOperationException("Failed to create the Syphon server.");
@@ -45,7 +48,8 @@ public sealed partial class SyphonServer : IDisposable
 
     private void LogFirstPublish()
     {
-        if (_firstPublishLogged) return;
+        if (_firstPublishLogged)
+            return;
         _firstPublishLogged = true;
         LogFirstFrame(HasClients);
     }
@@ -61,7 +65,10 @@ public sealed partial class SyphonServer : IDisposable
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         ArgumentNullException.ThrowIfNull(surface);
-        if (SyphonNative.sy_server_publish_surface(_handle, surface.Handle.Handle, flipped ? 1 : 0) != 0)
+        if (
+            SyphonNative.sy_server_publish_surface(_handle, surface.Handle.Handle, flipped ? 1 : 0)
+            != 0
+        )
             throw new InvalidOperationException("Failed to publish the surface.");
         LogFirstPublish();
     }
@@ -76,16 +83,27 @@ public sealed partial class SyphonServer : IDisposable
     /// managed peer per native object); disposing it would zero the handle of an instance the server and
     /// every later call still share, which then reports a surface with no size, no planes and no pixels.
     /// </remarks>
-    public IOSurface.IOSurface AcquireSurface(int width, int height, CVPixelFormatType format = CVPixelFormatType.CV32BGRA)
+    public IOSurface.IOSurface AcquireSurface(
+        int width,
+        int height,
+        CVPixelFormatType format = CVPixelFormatType.CV32BGRA
+    )
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
-        nint surface = SyphonNative.sy_server_acquire_surface(_handle, (uint)width, (uint)height, (uint)format);
-        if (surface == 0) throw new InvalidOperationException("Failed to acquire a surface.");
+        nint surface = SyphonNative.sy_server_acquire_surface(
+            _handle,
+            (uint)width,
+            (uint)height,
+            (uint)format
+        );
+        if (surface == 0)
+            throw new InvalidOperationException("Failed to acquire a surface.");
         // The server owns the surface (it recreates/releases it), so wrap it non-owning. Held onto so the
         // peer callers write through is not finalized between acquire and publish.
-        _currentSurface = Runtime.GetINativeObject<IOSurface.IOSurface>(surface, owns: false)
+        _currentSurface =
+            Runtime.GetINativeObject<IOSurface.IOSurface>(surface, owns: false)
             ?? throw new InvalidOperationException("Failed to wrap the acquired surface.");
         return _currentSurface;
     }
@@ -103,12 +121,20 @@ public sealed partial class SyphonServer : IDisposable
     /// Convenience for CPU producers: acquire a surface of the given size, copy
     /// <paramref name="pixels"/> (tightly packed rows of <c>width * 4</c> bytes) into it, and publish.
     /// </summary>
-    public void PublishPixels(ReadOnlySpan<byte> pixels, int width, int height,
-        CVPixelFormatType format = CVPixelFormatType.CV32BGRA, bool flipped = false)
+    public void PublishPixels(
+        ReadOnlySpan<byte> pixels,
+        int width,
+        int height,
+        CVPixelFormatType format = CVPixelFormatType.CV32BGRA,
+        bool flipped = false
+    )
     {
         int rowBytes = width * 4;
         if (pixels.Length < rowBytes * height)
-            throw new ArgumentException("Pixel buffer is smaller than width * 4 * height.", nameof(pixels));
+            throw new ArgumentException(
+                "Pixel buffer is smaller than width * 4 * height.",
+                nameof(pixels)
+            );
 
         IOSurface.IOSurface surface = AcquireSurface(width, height, format);
         using (IOSurfaceExtensions.LockedSurface locked = surface.LockBytes(readOnly: false))
@@ -142,10 +168,12 @@ public sealed partial class SyphonServer : IDisposable
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         int needed = SyphonNative.sy_server_copy_description(_handle, null, 0);
-        if (needed <= 0) throw new InvalidOperationException("Failed to export the server description.");
+        if (needed <= 0)
+            throw new InvalidOperationException("Failed to export the server description.");
         byte[] buffer = new byte[needed];
         int written = SyphonNative.sy_server_copy_description(_handle, buffer, buffer.Length);
-        if (written != needed) throw new InvalidOperationException("Failed to export the server description.");
+        if (written != needed)
+            throw new InvalidOperationException("Failed to export the server description.");
         return buffer;
     }
 
@@ -168,7 +196,8 @@ public sealed partial class SyphonServer : IDisposable
     public void Dispose()
     {
         nint h = Interlocked.Exchange(ref _handle, 0);
-        if (h != 0) SyphonNative.sy_server_destroy(h);
+        if (h != 0)
+            SyphonNative.sy_server_destroy(h);
         // Drop the reference rather than disposing: the peer is shared with any loopback client that
         // received this surface, and with callers still holding it.
         _currentSurface = null;
@@ -177,6 +206,9 @@ public sealed partial class SyphonServer : IDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "server created")]
     private partial void LogCreated();
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "first frame published (hasClients={HasClients})")]
+    [LoggerMessage(
+        Level = LogLevel.Debug,
+        Message = "first frame published (hasClients={HasClients})"
+    )]
     private partial void LogFirstFrame(bool hasClients);
 }
