@@ -3,6 +3,7 @@
     <!-- The library binds Microsoft's macOS frameworks (IOSurface/CoreVideo/Metal), so it is
          macOS-only; tests share that target. -->
     <TargetFramework>net11.0-macos</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- A test module on this target is an app: the SDK builds it into a .app bundle and points the
          run command at the apphost inside it. That bundle is only emitted for a RID-specific build,
          and Release otherwise defaults to a universal build with no single RID, which left the run
@@ -27,7 +28,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- CA1515: test types do not need to be internal -->
-    <NoWarn>CA1515</NoWarn>
+    <NoWarn>CA1515;CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
