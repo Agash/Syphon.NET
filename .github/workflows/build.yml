@@ -68,7 +68,7 @@ jobs:
         run: dotnet build Syphon.NET.slnx --no-restore -c Release
 
       - name: Test (value-type)
-        run: dotnet test Syphon.NET.slnx --no-build -c Release -- --coverage --coverage-settings coverage.settings.xml --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
+        run: dotnet test --solution Syphon.NET.slnx --no-build -c Release -- --coverage --coverage-settings coverage.settings.xml --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
              --filter "TestCategory!=Transport&TestCategory!=Directory"
 
       - name: Summarize coverage
@@ -125,13 +125,13 @@ jobs:
         # Gating: a server publishes and a loopback client receives byte-exact, with no dependency
         # on the distributed-notification directory. This works on headless runners with a Metal
         # device and is the authoritative end-to-end read+write check.
-        run: dotnet test Syphon.NET.slnx --no-build -c Release
+        run: dotnet test --solution Syphon.NET.slnx --no-build -c Release
              --filter "TestCategory=Transport"
 
       - name: Test (directory discovery)
         # Gating: discovery works on any Metal-capable host (incl. headless CI) once the run loop
         # is pumped via SyphonServerDirectory.PumpEvents.
-        run: dotnet test Syphon.NET.slnx --no-build -c Release
+        run: dotnet test --solution Syphon.NET.slnx --no-build -c Release
              --filter "TestCategory=Directory"
 
       - name: Native probe (Metal + loopback transport + directory)
