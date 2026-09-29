@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''"
+      >$(NETCoreSdkPortableRuntimeIdentifier)</RuntimeIdentifier>
+    <ApplicationId>net.syphon.smoke</ApplicationId>
+    <RunWithOpen>false</RunWithOpen>
+    <PublishAot>true</PublishAot>
+    <!-- A smoke run needs no debug symbols bundle. -->
+    <NoDSymUtil>true</NoDSymUtil>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Syphon.NET\Syphon.NET.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,106 +1,291 @@
-using System.Text;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
-using Syphon.NET.Interop;
+using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
+using System.Threading.Channels;
+using Syphon.NET.Protocol;
 
 namespace Syphon.NET;
 
 /// <summary>
-/// Discovers Syphon servers published by other applications and creates clients for them.
+/// The Syphon servers on this machine, kept current from the announcements servers make. The
+/// announcements arrive through the main thread's run loop, which an AppKit or MAUI application serves
+/// and a console host serves with <see cref="SyphonMainLoop"/>.
 /// </summary>
-public sealed partial class SyphonServerDirectory : IDisposable
+/// <remarks>
+/// As the Syphon framework's directory does, it checks that the servers it lists are alive whenever
+/// any application asks servers to announce themselves, and drops those that do not answer.
+/// </remarks>
+public sealed class SyphonServerDirectory : IDisposable
 {
-    private const int FieldBufferSize = 256;
-    private readonly ILoggerFactory _loggerFactory;
-    private readonly ILogger _logger;
-    private nint _handle;
+    private readonly Lock _gate = new();
+    private readonly IDisposable _subscription;
+    private readonly List<Channel<ImmutableArray<SyphonServerDescription>>> _watchers = [];
+    private ImmutableArray<SyphonServerDescription> _servers = [];
+    private HashSet<string>? _pings;
+    private bool _disposed;
 
-    /// <summary>Open the shared server directory.</summary>
-    /// <param name="loggerFactory">Optional factory for Debug/Trace diagnostics; omit for none.</param>
-    public SyphonServerDirectory(ILoggerFactory? loggerFactory = null)
+    /// <summary>Starts listening and asks every running server to announce itself.</summary>
+    public SyphonServerDirectory()
     {
-        SyphonRuntime.EnsureInitialized();
-        _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
-        _logger = _loggerFactory.CreateLogger("Syphon.NET.Directory");
-        _handle = SyphonNative.sy_directory_create();
-        if (_handle == 0)
-            throw new InvalidOperationException("Failed to open the Syphon server directory.");
-        LogCreated();
+        _subscription = NotificationHub.Subscribe(OnNotification);
+        Refresh();
     }
 
-    /// <summary>Number of servers currently advertised.</summary>
-    public int Count
+    /// <summary>A server announced itself, on the main thread.</summary>
+    public event EventHandler<SyphonServerDescription>? ServerAnnounced;
+
+    /// <summary>A server changed its description (its name), on the main thread.</summary>
+    public event EventHandler<SyphonServerDescription>? ServerUpdated;
+
+    /// <summary>A server stopped, on the main thread.</summary>
+    public event EventHandler<SyphonServerDescription>? ServerRetired;
+
+    /// <summary>The servers known now.</summary>
+    public ImmutableArray<SyphonServerDescription> Servers
     {
         get
         {
-            ObjectDisposedException.ThrowIf(_handle == 0, this);
-            return SyphonNative.sy_directory_count(_handle);
+            lock (_gate)
+            {
+                return _servers;
+            }
         }
     }
 
-    /// <summary>
-    /// Run the calling thread's Cocoa run loop for <paramref name="duration"/> so the directory
-    /// receives server announce/retire notifications. Hosts that already run a Cocoa run loop (a
-    /// MAUI/AppKit app) do not need this; plain console or server processes must call it (on the
-    /// same thread that created this directory) for <see cref="GetServers"/> to discover anything.
-    /// </summary>
-    public void PumpEvents(TimeSpan duration)
+    /// <summary>Asks every running server to announce itself, which also checks the listed ones are alive.</summary>
+    public void Refresh()
     {
-        ObjectDisposedException.ThrowIf(_handle == 0, this);
-        SyphonNative.sy_pump(duration.TotalSeconds);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NotificationHub.Post(SyphonProtocol.AnnounceRequest, null, null);
     }
 
-    /// <summary>Snapshot the currently advertised servers.</summary>
-    public IReadOnlyList<SyphonServerDescription> GetServers()
+    /// <summary>The servers each time the set changes; the first result is the current set.</summary>
+    /// <param name="cancellationToken">Ends the sequence.</param>
+    /// <returns>The servers, each time they change.</returns>
+    public IAsyncEnumerable<ImmutableArray<SyphonServerDescription>> WatchAsync(
+        CancellationToken cancellationToken = default
+    )
     {
-        ObjectDisposedException.ThrowIf(_handle == 0, this);
-        int count = SyphonNative.sy_directory_count(_handle);
-        var list = new List<SyphonServerDescription>(count);
-
-        byte[] uuid = new byte[FieldBufferSize];
-        byte[] app = new byte[FieldBufferSize];
-        byte[] name = new byte[FieldBufferSize];
-        for (int i = 0; i < count; i++)
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        Channel<ImmutableArray<SyphonServerDescription>> channel = Channel.CreateBounded<
+            ImmutableArray<SyphonServerDescription>
+        >(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
+        lock (_gate)
         {
-            if (SyphonNative.sy_directory_get(_handle, i, uuid, app, name, FieldBufferSize) != 0)
-                continue;
-            list.Add(new SyphonServerDescription(Decode(uuid), Decode(app), Decode(name)));
+            _watchers.Add(channel);
+            _ = channel.Writer.TryWrite(_servers);
         }
-        return list;
+
+        return Watch(channel, cancellationToken);
     }
 
-    /// <summary>
-    /// Create a client for the server at <paramref name="index"/> within the current snapshot.
-    /// The optional <paramref name="onFrameReady"/> handler fires when a new frame arrives;
-    /// frames are retrieved with <see cref="SyphonClient.TryGetFrame"/>.
-    /// </summary>
-    public SyphonClient CreateClient(int index, Action? onFrameReady = null)
+    /// <summary>Waits for a server to be announced.</summary>
+    /// <param name="match">Which server.</param>
+    /// <param name="cancellationToken">Stops waiting.</param>
+    /// <returns>The first server that matches, already listed or announced later.</returns>
+    public async Task<SyphonServerDescription> WaitForServerAsync(
+        Func<SyphonServerDescription, bool> match,
+        CancellationToken cancellationToken = default
+    )
     {
-        ObjectDisposedException.ThrowIf(_handle == 0, this);
-        return SyphonClient.FromDirectory(
-            _handle,
-            index,
-            onFrameReady,
-            _loggerFactory.CreateLogger("Syphon.NET.Client")
-        );
-    }
+        ArgumentNullException.ThrowIfNull(match);
+        await foreach (
+            ImmutableArray<SyphonServerDescription> servers in WatchAsync(cancellationToken)
+                .ConfigureAwait(false)
+        )
+        {
+            foreach (SyphonServerDescription server in servers)
+            {
+                if (match(server))
+                {
+                    return server;
+                }
+            }
+        }
 
-    private static string Decode(byte[] buffer)
-    {
-        int end = Array.IndexOf<byte>(buffer, 0);
-        if (end < 0)
-            end = buffer.Length;
-        return Encoding.UTF8.GetString(buffer, 0, end);
+        throw new OperationCanceledException(cancellationToken);
     }
 
     /// <inheritdoc/>
     public void Dispose()
     {
-        nint h = Interlocked.Exchange(ref _handle, 0);
-        if (h != 0)
-            SyphonNative.sy_directory_destroy(h);
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            foreach (Channel<ImmutableArray<SyphonServerDescription>> watcher in _watchers)
+            {
+                _ = watcher.Writer.TryComplete();
+            }
+
+            _watchers.Clear();
+        }
+
+        _subscription.Dispose();
     }
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "server directory opened")]
-    private partial void LogCreated();
+    private async IAsyncEnumerable<ImmutableArray<SyphonServerDescription>> Watch(
+        Channel<ImmutableArray<SyphonServerDescription>> channel,
+        [EnumeratorCancellation] CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            await foreach (
+                ImmutableArray<SyphonServerDescription> servers in channel
+                    .Reader.ReadAllAsync(cancellationToken)
+                    .ConfigureAwait(false)
+            )
+            {
+                yield return servers;
+            }
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                _ = _watchers.Remove(channel);
+            }
+        }
+    }
+
+    private void OnNotification(string name, NSDictionary? userInfo)
+    {
+        if (name == SyphonProtocol.AnnounceRequest)
+        {
+            StartPing();
+            return;
+        }
+
+        if (userInfo is null)
+        {
+            return;
+        }
+
+        SyphonServerDescription server = new(userInfo);
+        if (server.Uuid.Length == 0)
+        {
+            return;
+        }
+
+        switch (name)
+        {
+            case SyphonProtocol.Announce:
+                bool added;
+                lock (_gate)
+                {
+                    _ = _pings?.Add(server.Uuid);
+                    added = !_servers.Contains(server);
+                    if (added)
+                    {
+                        Changed(_servers.Add(server));
+                    }
+                }
+
+                if (added)
+                {
+                    ServerAnnounced?.Invoke(this, server);
+                }
+
+                break;
+            case SyphonProtocol.Update:
+                bool updated;
+                lock (_gate)
+                {
+                    int index = _servers.IndexOf(server);
+                    updated = index >= 0;
+                    if (updated)
+                    {
+                        Changed(_servers.SetItem(index, server));
+                    }
+                }
+
+                if (updated)
+                {
+                    ServerUpdated?.Invoke(this, server);
+                }
+
+                break;
+            case SyphonProtocol.Retire:
+                Retire([server]);
+                break;
+            default:
+                break;
+        }
+    }
+
+    // Any application's announce request is a liveness check: servers answer with an announce, and
+    // those that have not answered by the timeout are gone (SyphonServerDirectory handleAnnounceRequest).
+    private void StartPing()
+    {
+        lock (_gate)
+        {
+            if (_pings is not null || _disposed)
+            {
+                return;
+            }
+
+            _pings = [with(StringComparer.Ordinal)];
+        }
+
+        _ = Task.Delay(SyphonProtocol.AnnounceTimeout)
+            .ContinueWith(
+                _ =>
+                {
+                    SyphonServerDescription[] silent;
+                    lock (_gate)
+                    {
+                        HashSet<string> answered = _pings!;
+                        _pings = null;
+                        silent = [.. _servers.Where(s => !answered.Contains(s.Uuid))];
+                    }
+
+                    Retire(silent);
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
+            );
+    }
+
+    private void Retire(IReadOnlyCollection<SyphonServerDescription> servers)
+    {
+        List<SyphonServerDescription> removed = [];
+        lock (_gate)
+        {
+            ImmutableArray<SyphonServerDescription> remaining = _servers;
+            foreach (SyphonServerDescription server in servers)
+            {
+                int index = remaining.IndexOf(server);
+                if (index >= 0)
+                {
+                    removed.Add(remaining[index]);
+                    remaining = remaining.RemoveAt(index);
+                }
+            }
+
+            if (removed.Count > 0)
+            {
+                Changed(remaining);
+            }
+        }
+
+        foreach (SyphonServerDescription server in removed)
+        {
+            ServerRetired?.Invoke(this, server);
+        }
+    }
+
+    // Called holding the lock.
+    private void Changed(ImmutableArray<SyphonServerDescription> servers)
+    {
+        _servers = servers;
+        foreach (Channel<ImmutableArray<SyphonServerDescription>> watcher in _watchers)
+        {
+            _ = watcher.Writer.TryWrite(servers);
+        }
+    }
 }

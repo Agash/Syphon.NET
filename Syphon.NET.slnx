@@ -12,10 +12,10 @@
     <Folder Name="/src/">
         <Project Path="src/Syphon.NET/Syphon.NET.csproj" />
     </Folder>
+    <Folder Name="/samples/">
+        <Project Path="samples/Syphon.NET.Smoke/Syphon.NET.Smoke.csproj" />
+    </Folder>
     <Folder Name="/tests/">
         <Project Path="tests/Syphon.NET.Tests/Syphon.NET.Tests.csproj" />
-    </Folder>
-    <Folder Name="/samples/">
-        <Project Path="samples/Syphon.NET.Peer/Syphon.NET.Peer.csproj" />
     </Folder>
 </Solution>

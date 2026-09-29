@@ -1,44 +1,51 @@
 #!/usr/bin/env python3
-"""Foreign-implementation peer for Syphon.NET interop tests, built on syphon-python.
+"""The Syphon framework, through syphon-python, as an independent peer for Syphon.NET's interop tests.
 
-Modes:
-  server  publish a deterministic pattern under a name (pumps its run loop so it stays
-          discoverable).
-  client  discover a named server, receive a frame, and verify its content byte-exact
-          (allowing an R/B channel swap, which Syphon's BGRA canonicalisation can introduce).
+syphon-python ships the upstream Syphon framework, so this is the reference implementation talking to
+Syphon.NET across processes.
 
-The pattern matches the C# peer's Pattern(): per pixel (x, y) the four channels are
-[x, y, x^y, (x+y)] mod 256.
+  syphon_peer.py server <name> <width> <height>
+      publishes frames until stdin closes; prints READY, then SENT <frame> for every frame
+  syphon_peer.py client <name> <frames> <seconds>
+      finds the server by name, receives <frames> new frames or gives up; prints
+      FRAME <index> <width> <height> <fnv1a> per frame, <index> being the frame index the pixels carry
+
+Frame content is pattern() below; the tests compute the same bytes (BGRA, the frame index in the first
+pixel).
 """
 
-import argparse
+import struct
 import sys
+import threading
 import time
 
+import Metal
 import numpy as np
+import objc
 import syphon
+from Foundation import NSDate, NSDefaultRunLoopMode, NSRunLoop
 from syphon.utils.numpy import copy_image_to_mtl_texture, copy_mtl_texture_to_image
 from syphon.utils.raw import create_mtl_texture
 
-from Foundation import (
-    NSRunLoop,
-    NSDate,
-    NSDefaultRunLoopMode,
-    NSData,
-    NSPropertyListSerialization,
-)
+
+def pattern(frame: int, width: int, height: int) -> np.ndarray:
+    xs = np.arange(width, dtype=np.uint32)
+    ys = np.arange(height, dtype=np.uint32)
+    x, y = np.meshgrid(xs, ys)
+    image = np.zeros((height, width, 4), dtype=np.uint8)
+    image[..., 0] = ((x * 7 + frame * 29) & 0xFF).astype(np.uint8)
+    image[..., 1] = ((y * 13 + frame * 31) & 0xFF).astype(np.uint8)
+    image[..., 2] = (((x ^ y) + frame * 37) & 0xFF).astype(np.uint8)
+    image[..., 3] = 255
+    image.reshape(-1)[:4] = np.frombuffer(struct.pack("<I", frame), dtype=np.uint8)
+    return image
 
 
-def pattern(w: int, h: int) -> np.ndarray:
-    xs = np.arange(w, dtype=np.uint16)
-    ys = np.arange(h, dtype=np.uint16)
-    grid_x, grid_y = np.meshgrid(xs, ys)  # (h, w)
-    img = np.zeros((h, w, 4), dtype=np.uint8)
-    img[..., 0] = (grid_x & 0xFF).astype(np.uint8)
-    img[..., 1] = (grid_y & 0xFF).astype(np.uint8)
-    img[..., 2] = ((grid_x ^ grid_y) & 0xFF).astype(np.uint8)
-    img[..., 3] = ((grid_x + grid_y) & 0xFF).astype(np.uint8)
-    return img
+def fnv1a(data: bytes) -> int:
+    value = 14695981039346656037
+    for byte in data:
+        value = ((value ^ byte) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return value
 
 
 def pump(seconds: float) -> None:
@@ -47,103 +54,73 @@ def pump(seconds: float) -> None:
     )
 
 
-def run_server(name: str, w: int, h: int, seconds: int) -> int:
+def serve(name: str, width: int, height: int) -> int:
     server = syphon.SyphonMetalServer(name)
-    texture = create_mtl_texture(server.device, w, h)
-    copy_image_to_mtl_texture(pattern(w, h), texture)
-    print(f"[py-server] publishing '{name}' {w}x{h} for {seconds}s", flush=True)
-    end = time.time() + seconds
-    while time.time() < end:
-        server.publish_frame_texture(texture)
-        pump(0.016)  # keep responding to directory announce requests
+    texture = create_mtl_texture(server.device, width, height, Metal.MTLPixelFormatBGRA8Unorm)
+    stop = threading.Event()
+    threading.Thread(target=lambda: (sys.stdin.read(), stop.set()), daemon=True).start()
+    frame = 0
+    print("READY", flush=True)
+    while not stop.is_set():
+        frame += 1
+        copy_image_to_mtl_texture(pattern(frame, width, height), texture)
+        # The next frame overwrites the texture from the CPU, so this frame's GPU copy out of it must
+        # finish first, or it would publish the next frame's pixels.
+        command_buffer = server.command_queue.commandBuffer()
+        server.publish_frame_texture(texture, command_buffer=command_buffer)
+        command_buffer.waitUntilCompleted()
+        print(f"SENT {frame}", flush=True)
+        pump(0.016)  # also answers directory announce requests
     server.stop()
     return 0
 
 
-def description_from_file(path: str) -> syphon.SyphonServerDescription:
-    raw = open(path, "rb").read()
-    data = NSData.dataWithBytes_length_(raw, len(raw))
-    plist, _fmt, _err = NSPropertyListSerialization.propertyListWithData_options_format_error_(
-        data, 0, None, None
-    )
-    uuid = plist.objectForKey_("SyphonServerDescriptionUUIDKey")
-    name = plist.objectForKey_("SyphonServerDescriptionNameKey")
-    app = plist.objectForKey_("SyphonServerDescriptionAppNameKey")
-    return syphon.SyphonServerDescription(
-        str(uuid) if uuid else "",
-        str(name) if name else "",
-        str(app) if app else "",
-        None,
-        plist,
-    )
+def find(name: str, deadline: float):
+    # The framework's own directory. syphon-python's wrapper reads each server's icon unconditionally,
+    # and a server hosted by a console process (as the tests' are) has none.
+    directory = objc.lookUpClass("SyphonServerDirectory").sharedDirectory()
+    while time.time() < deadline:
+        pump(0.05)
+        for raw in directory.servers():
+            if str(raw.get("SyphonServerDescriptionNameKey", "")) == name:
+                return syphon.SyphonServerDescription(
+                    str(raw["SyphonServerDescriptionUUIDKey"]),
+                    name,
+                    str(raw.get("SyphonServerDescriptionAppNameKey", "")),
+                    None,
+                    raw,
+                )
+    return None
 
 
-def run_client(name: str, timeout: int, desc_file: str) -> int:
-    if desc_file:
-        # Connect via an exported description (bypasses the directory, whose syphon-python wrapper
-        # assumes an icon key that an iconless console server does not advertise).
-        description = description_from_file(desc_file)
-        print(f"[py-client] connecting to '{name}' via exported description", flush=True)
-    else:
-        directory = syphon.SyphonServerDirectory()
-        description = None
-        end = time.time() + timeout
-        while time.time() < end and description is None:
-            matches = [s for s in directory.servers if s.name == name]  # .servers pumps internally
-            if matches:
-                description = matches[0]
-            else:
-                time.sleep(0.1)
-        if description is None:
-            print(f"[py-client] foreign server '{name}' not discovered", flush=True)
-            return 3
-        print(f"[py-client] discovered '{name}'; connecting", flush=True)
+def receive(name: str, frames: int, seconds: float) -> int:
+    deadline = time.time() + seconds
+    description = find(name, deadline)
+    if description is None:
+        print("ERROR no server", flush=True)
+        return 1
 
     client = syphon.SyphonMetalClient(description)
-    frame = None
-    end = time.time() + timeout
-    while time.time() < end and frame is None:
-        if client.has_new_frame:
-            frame = copy_mtl_texture_to_image(client.new_frame_image)
-        else:
-            time.sleep(0.016)
+    received = 0
+    while received < frames and time.time() < deadline:
+        pump(0.002)
+        if not client.has_new_frame:
+            continue
+        texture = client.new_frame_image
+        image = copy_mtl_texture_to_image(texture)
+        data = image.tobytes()
+        index = struct.unpack("<I", data[:4])[0]
+        print(f"FRAME {index} {texture.width()} {texture.height()} {fnv1a(data)}", flush=True)
+        received += 1
     client.stop()
-
-    if frame is None:
-        print("[py-client] no frame received", flush=True)
-        return 4
-
-    h, w = frame.shape[0], frame.shape[1]
-    expected = pattern(w, h)
-    print(f"[py-client] recv {w}x{h} shape {frame.shape}", flush=True)
-    print(f"[py-client] expected[0,0:2]={expected[0, 0:2].tolist()}", flush=True)
-    print(f"[py-client] got     [0,0:2]={frame[0, 0:2].tolist()}", flush=True)
-
-    if np.array_equal(expected, frame):
-        print("[py-client] PASS byte-exact", flush=True)
-        return 0
-    if np.array_equal(expected, frame[..., [2, 1, 0, 3]]):
-        print("[py-client] PASS (R/B swapped)", flush=True)
-        return 0
-    print("[py-client] MISMATCH", flush=True)
-    return 1
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["server", "client"])
-    parser.add_argument("--name", default="PyPeer")
-    parser.add_argument("--w", type=int, default=64)
-    parser.add_argument("--h", type=int, default=64)
-    parser.add_argument("--seconds", type=int, default=40)
-    parser.add_argument("--timeout", type=int, default=20)
-    parser.add_argument("--desc-file", default="")
-    args = parser.parse_args()
-
-    if args.mode == "server":
-        return run_server(args.name, args.w, args.h, args.seconds)
-    return run_client(args.name, args.timeout, args.desc_file)
+    return 0 if received == frames else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    if mode == "server" and len(sys.argv) == 5:
+        sys.exit(serve(sys.argv[2], int(sys.argv[3]), int(sys.argv[4])))
+    if mode == "client" and len(sys.argv) == 5:
+        sys.exit(receive(sys.argv[2], int(sys.argv[3]), float(sys.argv[4])))
+    print(__doc__)
+    sys.exit(64)

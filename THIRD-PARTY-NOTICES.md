@@ -1,17 +1,20 @@
 # Third-party notices
 
-Syphon.NET distributes a native helper that statically includes the Syphon framework.
+The Syphon.NET package contains only Syphon.NET's own code. The repository also carries the following
+for development; none of it ships in the package.
 
 ## Syphon framework
 
 - Project: https://github.com/Syphon/Syphon-Framework
 - License: Simplified BSD (2-clause)
+- Location: `external/Syphon-Framework` (git submodule)
 
-The Syphon framework is included as a git submodule under `native/vendor/Syphon-Framework`
-and compiled into the bundled native binary (`libsyphon_shim.dylib`). Its full license text
-is in that submodule's `License.txt`. The BSD license requires that its copyright notice and
-disclaimer be retained in redistributions, including binary form; this notice satisfies that
-requirement, and the verbatim text travels with the submodule.
+The protocol reference Syphon.NET implements. Its license text is the submodule's `License.txt`.
 
-Copyright belongs to the Syphon authors. See the upstream repository for the complete and
-current copyright notice.
+## syphon-python
+
+- Project: https://github.com/cansik/syphon-python
+- License: MIT
+
+Installed by developers and CI (not vendored) to run the Syphon framework as the peer of the interop
+tests in `tests/interop/syphon_peer.py`.

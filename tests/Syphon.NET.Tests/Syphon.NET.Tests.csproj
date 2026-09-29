@@ -2,7 +2,6 @@
   <PropertyGroup>
     <!-- The library binds Microsoft's macOS frameworks (IOSurface/CoreVideo/Metal), so it is
          macOS-only; tests share that target. -->
-    <TargetFramework>net11.0-macos</TargetFramework>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- A test module on this target is an app: the SDK builds it into a .app bundle and points the
          run command at the apphost inside it. That bundle is only emitted for a RID-specific build,
@@ -12,7 +11,6 @@
          keeps the path real on both arm64 and Intel machines. -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''"
       >$(NETCoreSdkPortableRuntimeIdentifier)</RuntimeIdentifier>
-    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
     <ApplicationId>net.syphon.tests</ApplicationId>
     <IsPackable>false</IsPackable>
     <EnableMSTestRunner>true</EnableMSTestRunner>
@@ -24,11 +22,8 @@
          environment nor reliably forwards arguments, so the runner never completes its handshake
          with `dotnet test`. Launch the app binary directly instead. -->
     <RunWithOpen>false</RunWithOpen>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- CA1515: test types do not need to be internal -->
-    <NoWarn>CA1515;CS1591</NoWarn>
+    <NoWarn>$(NoWarn);CA1515;CA1707;CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -39,8 +34,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The native shim flows in transitively from the Syphon.NET project reference (it is copied to
-         output there); no need to re-declare it here. -->
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\Syphon.NET\Syphon.NET.csproj" />
   </ItemGroup>
 </Project>

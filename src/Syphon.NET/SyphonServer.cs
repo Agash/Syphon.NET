@@ -1,214 +1,416 @@
-using CoreVideo;
-using IOSurface;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
-using ObjCRuntime;
-using Syphon.NET.Interop;
+using System.Diagnostics;
+using Metal;
+using Syphon.NET.Protocol;
 
 namespace Syphon.NET;
 
+/// <summary>How a server presents itself.</summary>
+public sealed record SyphonServerOptions
+{
+    /// <summary>
+    /// Keep the server out of directories: clients reach it only through a description the
+    /// application hands them (<see cref="SyphonServerDescription.ToPropertyList"/>).
+    /// </summary>
+    public bool IsPrivate { get; init; }
+}
+
 /// <summary>
-/// Publishes video frames for other applications to consume (for example an OBS Syphon source).
-/// Frames are shared zero-copy through IOSurface-backed Metal textures. Surfaces are the Microsoft
-/// <see cref="IOSurface.IOSurface"/> bindings directly - no wrapper type.
+/// Shares frames with other applications as IOSurfaces: a Syphon server. OBS, Resolume, MadMapper
+/// and other Syphon applications see it in their directory by its name and application.
 /// </summary>
 /// <remarks>
-/// There are two ways to publish:
-/// <list type="bullet">
-/// <item>For GPU-produced frames you already hold as an <see cref="IOSurface.IOSurface"/> (such as a VideoToolbox
-/// CVPixelBuffer's surface), call <see cref="Publish(IOSurface.IOSurface, bool)"/> directly.</item>
-/// <item>For CPU-produced frames, call <see cref="AcquireSurface"/> to get a writable surface,
-/// fill it, then call <see cref="PublishCurrent"/>. <see cref="PublishPixels"/> wraps that.</item>
-/// </list>
+/// <para>
+/// Frames are 8-bit BGRA, as every Syphon server's are. The server owns one surface and renders each
+/// frame into it; a client reads the same surface, so publishing costs no copy between processes.
+/// </para>
+/// <para>
+/// Directories started after the server find it by asking servers to announce themselves, which it
+/// hears through the main thread's run loop: an AppKit or MAUI application serves it, a console host
+/// serves it with <see cref="SyphonMainLoop"/>.
+/// </para>
 /// </remarks>
-public sealed partial class SyphonServer : IDisposable
+public sealed class SyphonServer : IDisposable
 {
-    private readonly ILogger _logger;
-    private nint _handle;
-    private bool _firstPublishLogged;
+    private static readonly Lock s_liveGate = new();
+    private static readonly HashSet<SyphonServer> s_live = [];
 
-    // Strong reference to the surface most recently handed out by AcquireSurface; see the note there.
-    private IOSurface.IOSurface? _currentSurface;
+    private readonly Lock _gate = new();
+    private readonly ServerConnection _connection;
+    private readonly IDisposable? _discovery;
+    private readonly NSObject? _activity;
+    private readonly bool _broadcasts;
+    private IOSurface.IOSurface? _surface;
+    private IMTLTexture? _surfaceTexture;
+    private bool _surfaceChanged;
+    private string _name;
+    private bool _frameOpen;
+    private bool _disposed;
 
-    /// <summary>Create a server advertised to other applications under <paramref name="name"/>.</summary>
-    /// <param name="name">Server name advertised to clients.</param>
-    /// <param name="loggerFactory">Optional factory for Debug/Trace diagnostics; omit for none.</param>
-    public SyphonServer(string? name = null, ILoggerFactory? loggerFactory = null)
+    static SyphonServer() =>
+        AppDomain.CurrentDomain.ProcessExit += static (_, _) => RetireRemaining();
+
+    /// <summary>Starts a server.</summary>
+    /// <param name="name">The name clients see; empty when the application's name says enough.</param>
+    /// <param name="options">How the server presents itself.</param>
+    public SyphonServer(string? name = null, SyphonServerOptions? options = null)
     {
-        SyphonRuntime.EnsureInitialized();
-        Name = name;
-        _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger(
-            $"Syphon.NET.Server.{name ?? "(unnamed)"}"
+        _name = name ?? string.Empty;
+        Uuid = SyphonProtocol.CreateUuid();
+        _broadcasts = options?.IsPrivate != true;
+        _connection = new ServerConnection(Uuid);
+        _connection.ClientsChanged += hasClients => ClientsChanged?.Invoke(this, hasClients);
+
+        // The SDK keeps a serving process out of App Nap and automatic termination while it serves.
+        _activity = NSProcessInfo.ProcessInfo.BeginActivity(
+            NSActivityOptions.AutomaticTerminationDisabled | NSActivityOptions.Background,
+            Uuid
         );
-        _handle = SyphonNative.sy_server_create(name);
-        if (_handle == 0)
-            throw new InvalidOperationException("Failed to create the Syphon server.");
-        LogCreated();
-    }
 
-    private void LogFirstPublish()
-    {
-        if (_firstPublishLogged)
-            return;
-        _firstPublishLogged = true;
-        LogFirstFrame(HasClients);
-    }
+        if (_broadcasts)
+        {
+            lock (s_liveGate)
+            {
+                _ = s_live.Add(this);
+            }
 
-    /// <summary>The advertised server name, if any.</summary>
-    public string? Name { get; }
-
-    /// <summary>True while at least one client is connected.</summary>
-    public bool HasClients => _handle != 0 && SyphonNative.sy_server_has_clients(_handle) != 0;
-
-    /// <summary>Publish an IOSurface you own directly (zero-copy for GPU producers).</summary>
-    public void Publish(IOSurface.IOSurface surface, bool flipped = false)
-    {
-        ObjectDisposedException.ThrowIf(_handle == 0, this);
-        ArgumentNullException.ThrowIfNull(surface);
-        if (
-            SyphonNative.sy_server_publish_surface(_handle, surface.Handle.Handle, flipped ? 1 : 0)
-            != 0
-        )
-            throw new InvalidOperationException("Failed to publish the surface.");
-        LogFirstPublish();
+            _discovery = NotificationHub.Subscribe(OnNotification);
+            Broadcast(SyphonProtocol.Announce);
+        }
     }
 
     /// <summary>
-    /// Get a server-owned writable surface of the given size and format, recreated when the
-    /// dimensions or format change. Write pixels into it, then call <see cref="PublishCurrent"/>.
+    /// Raised when the first client connects (<see langword="true"/>) and when the last one leaves
+    /// (<see langword="false"/>), on a thread of Syphon.NET's.
     /// </summary>
-    /// <remarks>
-    /// The surface belongs to the server - do <b>not</b> dispose it. It is recycled while the size and
-    /// format hold, so successive calls hand back the very same managed instance (macOS bindings keep one
-    /// managed peer per native object); disposing it would zero the handle of an instance the server and
-    /// every later call still share, which then reports a surface with no size, no planes and no pixels.
-    /// </remarks>
-    public IOSurface.IOSurface AcquireSurface(
-        int width,
-        int height,
-        CVPixelFormatType format = CVPixelFormatType.CV32BGRA
-    )
+    public event EventHandler<bool>? ClientsChanged;
+
+    /// <summary>The name clients see. Renaming tells clients and directories.</summary>
+    public string Name
     {
-        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        get
+        {
+            lock (_gate)
+            {
+                return _name;
+            }
+        }
+        set
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            lock (_gate)
+            {
+                _name = value ?? string.Empty;
+            }
+
+            _connection.SetName(Name);
+            if (_broadcasts)
+            {
+                Broadcast(SyphonProtocol.Update);
+            }
+        }
+    }
+
+    /// <summary>The server's description, for directories and for connecting a client directly.</summary>
+    public SyphonServerDescription Description =>
+        SyphonServerDescription.Create(Uuid, Name, ApplicationName);
+
+    /// <summary>Whether any client is connected.</summary>
+    public bool HasClients => _connection.HasClients;
+
+    /// <summary>
+    /// The surface frames are rendered into (8-bit BGRA), or null before the first frame. It changes
+    /// when the frame size does.
+    /// </summary>
+    public IOSurface.IOSurface? Surface
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _surface;
+            }
+        }
+    }
+
+    internal string Uuid { get; }
+
+    private static string ApplicationName =>
+        NSRunningApplication.CurrentApplication.LocalizedName
+        ?? Process.GetCurrentProcess().ProcessName;
+
+    /// <summary>
+    /// Takes the server's surface for the application to render the next frame into, with no copy;
+    /// <see cref="SyphonServerFrame.Publish"/> publishes it. Syphon has no lock: clients may read the
+    /// surface while it is being written, so render in one GPU submission and publish when it completes.
+    /// </summary>
+    /// <param name="width">The frame's width; the surface is recreated when it changes.</param>
+    /// <param name="height">The frame's height.</param>
+    /// <returns>The open frame.</returns>
+    public SyphonServerFrame BeginFrame(int width, int height)
+    {
+        ThrowIfUnusable();
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
-        nint surface = SyphonNative.sy_server_acquire_surface(
-            _handle,
-            (uint)width,
-            (uint)height,
-            (uint)format
-        );
-        if (surface == 0)
-            throw new InvalidOperationException("Failed to acquire a surface.");
-        // The server owns the surface (it recreates/releases it), so wrap it non-owning. Held onto so the
-        // peer callers write through is not finalized between acquire and publish.
-        _currentSurface =
-            Runtime.GetINativeObject<IOSurface.IOSurface>(surface, owns: false)
-            ?? throw new InvalidOperationException("Failed to wrap the acquired surface.");
-        return _currentSurface;
-    }
-
-    /// <summary>Publish the surface most recently returned by <see cref="AcquireSurface"/>.</summary>
-    public void PublishCurrent(bool flipped = false)
-    {
-        ObjectDisposedException.ThrowIf(_handle == 0, this);
-        if (SyphonNative.sy_server_publish_current(_handle, flipped ? 1 : 0) != 0)
-            throw new InvalidOperationException("Failed to publish the current surface.");
-        LogFirstPublish();
+        IOSurface.IOSurface surface = EnsureSurface(width, height);
+        _frameOpen = true;
+        return new SyphonServerFrame(this, surface);
     }
 
     /// <summary>
-    /// Convenience for CPU producers: acquire a surface of the given size, copy
-    /// <paramref name="pixels"/> (tightly packed rows of <c>width * 4</c> bytes) into it, and publish.
+    /// Publishes a copy of a Metal texture as the next frame: a GPU blit into the server's surface,
+    /// encoded into <paramref name="commandBuffer"/>, published when the command buffer completes.
     /// </summary>
-    public void PublishPixels(
-        ReadOnlySpan<byte> pixels,
-        int width,
-        int height,
-        CVPixelFormatType format = CVPixelFormatType.CV32BGRA,
-        bool flipped = false
-    )
+    /// <param name="texture">The frame, 8-bit BGRA.</param>
+    /// <param name="commandBuffer">
+    /// A command buffer on the texture's device, not yet committed; the application commits it.
+    /// </param>
+    public void PublishTexture(IMTLTexture texture, IMTLCommandBuffer commandBuffer)
     {
-        int rowBytes = width * 4;
-        if (pixels.Length < rowBytes * height)
-            throw new ArgumentException(
-                "Pixel buffer is smaller than width * 4 * height.",
-                nameof(pixels)
-            );
-
-        IOSurface.IOSurface surface = AcquireSurface(width, height, format);
-        using (IOSurfaceExtensions.LockedSurface locked = surface.LockBytes(readOnly: false))
+        ArgumentNullException.ThrowIfNull(texture);
+        ArgumentNullException.ThrowIfNull(commandBuffer);
+        ThrowIfUnusable();
+        if (
+            texture.PixelFormat is not (MTLPixelFormat.BGRA8Unorm or MTLPixelFormat.BGRA8Unorm_sRGB)
+        )
         {
-            Span<byte> dst = locked.Bytes;
-            int stride = locked.BytesPerRow;
-            for (int row = 0; row < height; row++)
-                pixels.Slice(row * rowBytes, rowBytes).CopyTo(dst.Slice(row * stride, rowBytes));
+            throw new ArgumentException(
+                $"Syphon frames are 8-bit BGRA; the texture is {texture.PixelFormat}.",
+                nameof(texture)
+            );
         }
 
-        PublishCurrent(flipped);
+        int width = (int)texture.Width;
+        int height = (int)texture.Height;
+        IMTLTexture target;
+        lock (_gate)
+        {
+            IOSurface.IOSurface surface = EnsureSurface(width, height);
+            if (_surfaceTexture is null || _surfaceTexture.Device.Handle != texture.Device.Handle)
+            {
+                _surfaceTexture?.Dispose();
+                _surfaceTexture = Surfaces.Texture(texture.Device, surface);
+            }
+
+            target = _surfaceTexture;
+        }
+
+        IMTLBlitCommandEncoder blit =
+            commandBuffer.BlitCommandEncoder
+            ?? throw new SyphonException("The command buffer gave no blit encoder.");
+        blit.CopyFromTexture(
+            texture,
+            0,
+            0,
+            new MTLOrigin(0, 0, 0),
+            new MTLSize(width, height, 1),
+            target,
+            0,
+            0,
+            new MTLOrigin(0, 0, 0)
+        );
+        blit.EndEncoding();
+        commandBuffer.AddCompletedHandler(_ =>
+        {
+            if (!_disposed)
+            {
+                Publish();
+            }
+        });
     }
 
-    /// <summary>
-    /// Create a client connected directly to this server, bypassing the distributed-notification
-    /// directory. Useful for previewing your own output, and works in hosts that do not run a
-    /// Cocoa run loop (which the directory requires).
-    /// </summary>
-    public SyphonClient CreateLoopbackClient(Action? onFrameReady = null)
+    /// <summary>Publishes pixels from memory as the next frame, copied into the server's surface.</summary>
+    /// <param name="pixels">The frame, 8-bit BGRA rows.</param>
+    /// <param name="width">The frame's width.</param>
+    /// <param name="height">The frame's height.</param>
+    /// <param name="stride">Bytes per row in <paramref name="pixels"/>; 0 for tightly packed.</param>
+    public void PublishPixels(ReadOnlySpan<byte> pixels, int width, int height, int stride = 0)
     {
-        ObjectDisposedException.ThrowIf(_handle == 0, this);
-        return SyphonClient.ForServer(_handle, onFrameReady, _logger);
+        ThrowIfUnusable();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
+        int rowBytes = width * 4;
+        stride = stride == 0 ? rowBytes : stride;
+        ArgumentOutOfRangeException.ThrowIfLessThan(stride, rowBytes);
+        if (pixels.Length < (stride * (height - 1)) + rowBytes)
+        {
+            throw new ArgumentException(
+                "The pixels are fewer than the frame's size.",
+                nameof(pixels)
+            );
+        }
+
+        IOSurface.IOSurface surface = EnsureSurface(width, height);
+        Surfaces.Write(surface, pixels, width, height, stride);
+        Publish();
     }
-
-    /// <summary>
-    /// Export this server's connection description as a portable byte blob. Hand it to another
-    /// process (over any channel) and connect there with <see cref="SyphonClient.Connect"/> to
-    /// receive frames without going through the distributed-notification directory.
-    /// </summary>
-    public byte[] ExportDescription()
-    {
-        ObjectDisposedException.ThrowIf(_handle == 0, this);
-        int needed = SyphonNative.sy_server_copy_description(_handle, null, 0);
-        if (needed <= 0)
-            throw new InvalidOperationException("Failed to export the server description.");
-        byte[] buffer = new byte[needed];
-        int written = SyphonNative.sy_server_copy_description(_handle, buffer, buffer.Length);
-        if (written != needed)
-            throw new InvalidOperationException("Failed to export the server description.");
-        return buffer;
-    }
-
-    /// <summary>
-    /// Run the calling thread's Cocoa run loop for <paramref name="duration"/> so a server hosted
-    /// in a process without its own run loop keeps responding to directory announce requests and
-    /// stays discoverable. Call it periodically (for example once per published frame). Apps with a
-    /// Cocoa run loop (MAUI/AppKit) do not need this.
-    /// </summary>
-    public static void PumpEvents(TimeSpan duration) => SyphonNative.sy_pump(duration.TotalSeconds);
-
-    /// <summary>
-    /// Drain any pending run-loop events without blocking. Call once per published frame to keep the
-    /// server discoverable without the per-frame stall that a timed <see cref="PumpEvents"/> incurs when
-    /// the run loop is idle.
-    /// </summary>
-    public static void PumpOnce() => SyphonNative.sy_pump_once();
 
     /// <inheritdoc/>
     public void Dispose()
     {
-        nint h = Interlocked.Exchange(ref _handle, 0);
-        if (h != 0)
-            SyphonNative.sy_server_destroy(h);
-        // Drop the reference rather than disposing: the peer is shared with any loopback client that
-        // received this surface, and with callers still holding it.
-        _currentSurface = null;
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+        }
+
+        _connection.Dispose();
+        if (_broadcasts)
+        {
+            _discovery?.Dispose();
+            Broadcast(SyphonProtocol.Retire);
+            lock (s_liveGate)
+            {
+                _ = s_live.Remove(this);
+            }
+        }
+
+        if (_activity is not null)
+        {
+            NSProcessInfo.ProcessInfo.EndActivity(_activity);
+        }
+
+        _surfaceTexture?.Dispose();
+        _surface?.Dispose();
     }
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "server created")]
-    private partial void LogCreated();
+    internal void EndFrame(bool publish)
+    {
+        if (!_frameOpen)
+        {
+            return;
+        }
 
-    [LoggerMessage(
-        Level = LogLevel.Debug,
-        Message = "first frame published (hasClients={HasClients})"
-    )]
-    private partial void LogFirstFrame(bool hasClients);
+        _frameOpen = false;
+        if (publish)
+        {
+            Publish();
+        }
+    }
+
+    // Announces a new surface to clients first, then the frame (SyphonServerBase.publish).
+    private void Publish()
+    {
+        uint? announce = null;
+        lock (_gate)
+        {
+            if (_surfaceChanged && _surface is not null)
+            {
+                announce = _surface.SurfaceId;
+                _surfaceChanged = false;
+            }
+        }
+
+        if (announce is uint surfaceId)
+        {
+            _connection.SetSurface(surfaceId);
+        }
+
+        _connection.PublishNewFrame();
+    }
+
+    private IOSurface.IOSurface EnsureSurface(int width, int height)
+    {
+        lock (_gate)
+        {
+            if (
+                _surface is not null
+                && (int)_surface.Width == width
+                && (int)_surface.Height == height
+            )
+            {
+                return _surface;
+            }
+
+            _surfaceTexture?.Dispose();
+            _surfaceTexture = null;
+            _surface?.Dispose();
+            _surface = Surfaces.CreateGlobal(width, height);
+            _surfaceChanged = true;
+            return _surface;
+        }
+    }
+
+    private void OnNotification(string name, NSDictionary? _)
+    {
+        // Any application's announce request, a directory looking for servers, is answered.
+        if (name == SyphonProtocol.AnnounceRequest && !_disposed)
+        {
+            Broadcast(SyphonProtocol.Announce);
+        }
+    }
+
+    private void Broadcast(string notification) =>
+        NotificationHub.Post(notification, Uuid, Description.Dictionary);
+
+    // A server not disposed when the process ends still tells directories it is gone, as the SDK's
+    // library destructor does.
+    private static void RetireRemaining()
+    {
+        SyphonServer[] remaining;
+        lock (s_liveGate)
+        {
+            remaining = [.. s_live];
+        }
+
+        foreach (SyphonServer server in remaining)
+        {
+            using NSDictionary description = NSDictionary.FromObjectAndKey(
+                new NSString(server.Uuid),
+                new NSString(SyphonProtocol.UuidKey)
+            );
+            NotificationHub.Post(SyphonProtocol.Retire, SyphonProtocol.UuidKey, description);
+        }
+    }
+
+    private void ThrowIfUnusable()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_frameOpen)
+        {
+            throw new InvalidOperationException("A frame is open; publish or dispose it first.");
+        }
+    }
+}
+
+/// <summary>
+/// The server's surface, taken to render the next frame into (<see cref="SyphonServer.BeginFrame"/>).
+/// </summary>
+public readonly ref struct SyphonServerFrame : IDisposable
+{
+    private readonly SyphonServer? _server;
+
+    internal SyphonServerFrame(SyphonServer server, IOSurface.IOSurface surface)
+    {
+        _server = server;
+        Surface = surface;
+    }
+
+    /// <summary>The surface to render into, 8-bit BGRA, at the frame's size.</summary>
+    public IOSurface.IOSurface Surface { get; }
+
+    /// <summary>The frame's width.</summary>
+    public int Width => (int)Surface.Width;
+
+    /// <summary>The frame's height.</summary>
+    public int Height => (int)Surface.Height;
+
+    /// <summary>
+    /// A Metal texture over the surface on <paramref name="device"/>, to render the frame with Metal.
+    /// </summary>
+    /// <param name="device">The device to render on.</param>
+    /// <returns>The texture; dispose it when the frame is rendered.</returns>
+    public IMTLTexture CreateTexture(IMTLDevice device) => Surfaces.Texture(device, Surface);
+
+    /// <summary>Publishes what was rendered as the next frame.</summary>
+    public void Publish() =>
+        (_server ?? throw new InvalidOperationException("The frame was not opened.")).EndFrame(
+            publish: true
+        );
+
+    /// <summary>Ends the frame; unless it was published, clients are not told of it.</summary>
+    public void Dispose() => _server?.EndFrame(publish: false);
 }

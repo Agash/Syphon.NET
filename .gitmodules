@@ -1,3 +1,3 @@
-[submodule "native/vendor/Syphon-Framework"]
-	path = native/vendor/Syphon-Framework
+[submodule "external/Syphon-Framework"]
+	path = external/Syphon-Framework
 	url = https://github.com/Syphon/Syphon-Framework.git
