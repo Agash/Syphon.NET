@@ -39,6 +39,9 @@ using SyphonServer server = new("My Output");
 // Copy a Metal texture into the server's surface on the GPU, as part of your command buffer:
 server.PublishTexture(texture, commandBuffer);
 
+// A part of it, from a renderer that leaves rows bottom first:
+server.PublishTexture(texture, commandBuffer, new MTLRegion(new(0, 0, 0), new(1280, 720, 1)), flipped: true);
+
 // Or render into the server's surface directly, with no copy:
 using (SyphonServerFrame frame = server.BeginFrame(1920, 1080))
 {

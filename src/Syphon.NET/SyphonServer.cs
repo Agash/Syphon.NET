@@ -174,14 +174,26 @@ public sealed partial class SyphonServer : IDisposable
     }
 
     /// <summary>
-    /// Publishes a copy of a Metal texture as the next frame: a GPU blit into the server's surface,
+    /// Publishes a copy of a Metal texture as the next frame: a GPU copy into the server's surface,
     /// encoded into <paramref name="commandBuffer"/>, published when the command buffer completes.
     /// </summary>
     /// <param name="texture">The frame, 8-bit BGRA.</param>
     /// <param name="commandBuffer">
     /// A command buffer on the texture's device, not yet committed; the application commits it.
     /// </param>
-    public void PublishTexture(IMTLTexture texture, IMTLCommandBuffer commandBuffer)
+    /// <param name="region">
+    /// The part of the texture that is the frame, origin at the top left; the whole texture when null.
+    /// </param>
+    /// <param name="flipped">
+    /// Whether the texture's rows are bottom first, as an OpenGL-style renderer leaves them; the frame
+    /// is then flipped on the way, so clients see it upright.
+    /// </param>
+    public void PublishTexture(
+        IMTLTexture texture,
+        IMTLCommandBuffer commandBuffer,
+        MTLRegion? region = null,
+        bool flipped = false
+    )
     {
         ArgumentNullException.ThrowIfNull(texture);
         ArgumentNullException.ThrowIfNull(commandBuffer);
@@ -196,8 +208,29 @@ public sealed partial class SyphonServer : IDisposable
             );
         }
 
-        int width = (int)texture.Width;
-        int height = (int)texture.Height;
+        MTLRegion frame =
+            region
+            ?? new MTLRegion(
+                new MTLOrigin(0, 0, 0),
+                new MTLSize((nint)texture.Width, (nint)texture.Height, 1)
+            );
+        if (
+            frame.Origin.X < 0
+            || frame.Origin.Y < 0
+            || frame.Size.Width <= 0
+            || frame.Size.Height <= 0
+            || (nuint)(frame.Origin.X + frame.Size.Width) > texture.Width
+            || (nuint)(frame.Origin.Y + frame.Size.Height) > texture.Height
+        )
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(region),
+                "The region is not inside the texture."
+            );
+        }
+
+        int width = (int)frame.Size.Width;
+        int height = (int)frame.Size.Height;
         IMTLTexture target;
         lock (_gate)
         {
@@ -211,21 +244,28 @@ public sealed partial class SyphonServer : IDisposable
             target = _surfaceTexture;
         }
 
-        IMTLBlitCommandEncoder blit =
-            commandBuffer.BlitCommandEncoder
-            ?? throw new SyphonException("The command buffer gave no blit encoder.");
-        blit.CopyFromTexture(
-            texture,
-            0,
-            0,
-            new MTLOrigin(0, 0, 0),
-            new MTLSize(width, height, 1),
-            target,
-            0,
-            0,
-            new MTLOrigin(0, 0, 0)
-        );
-        blit.EndEncoding();
+        if (flipped)
+        {
+            FlipCopy.Encode(commandBuffer, texture, frame, target);
+        }
+        else
+        {
+            IMTLBlitCommandEncoder blit =
+                commandBuffer.BlitCommandEncoder
+                ?? throw new SyphonException("The command buffer gave no blit encoder.");
+            blit.CopyFromTexture(
+                texture,
+                0,
+                0,
+                frame.Origin,
+                frame.Size,
+                target,
+                0,
+                0,
+                new MTLOrigin(0, 0, 0)
+            );
+            blit.EndEncoding();
+        }
 
         commandBuffer.AddCompletedHandler(completed =>
         {

@@ -134,6 +134,78 @@ public sealed class ServerClientTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PublishTexture_PublishesARegion_FlippedWhenAsked(bool flipped)
+    {
+        IMTLDevice device =
+            MTLDevice.SystemDefault ?? throw new AssertInconclusiveException("No Metal device.");
+        using IMTLCommandQueue queue = device.CreateCommandQueue()!;
+        using SyphonServer server = new(Frames.UniqueName("region"));
+        using SyphonClient client = new(server.Description);
+        const int Outer = 96;
+        using IMTLTexture texture = device.CreateTexture(
+            MTLTextureDescriptor.CreateTexture2DDescriptor(
+                MTLPixelFormat.BGRA8Unorm,
+                Outer,
+                Outer,
+                false
+            )
+        )!;
+        byte[] whole = Frames.Pattern(6, Outer, Outer);
+        unsafe
+        {
+            fixed (byte* data = whole)
+            {
+                texture.ReplaceRegion(
+                    new MTLRegion(new MTLOrigin(0, 0, 0), new MTLSize(Outer, Outer, 1)),
+                    0,
+                    (nint)data,
+                    Outer * 4
+                );
+            }
+        }
+
+        // The frame is the region at (8, 16), Width x Height, rows reversed when flipped.
+        byte[] expected = new byte[Width * Height * 4];
+        for (int y = 0; y < Height; y++)
+        {
+            int from = flipped ? 16 + Height - 1 - y : 16 + y;
+            whole
+                .AsSpan(((from * Outer) + 8) * 4, Width * 4)
+                .CopyTo(expected.AsSpan(y * Width * 4));
+        }
+
+        IMTLCommandBuffer buffer = queue.CommandBuffer()!;
+        server.PublishTexture(
+            texture,
+            buffer,
+            new MTLRegion(new MTLOrigin(8, 16, 0), new MTLSize(Width, Height, 1)),
+            flipped
+        );
+        buffer.Commit();
+        buffer.WaitUntilCompleted();
+
+        await WaitUntilAsync(() => client.HasNewFrame);
+        _ = ReceiveOne(
+            client,
+            frame =>
+            {
+                Assert.AreEqual(Width, frame.Width);
+                Assert.AreEqual(Height, frame.Height);
+                CollectionAssert.AreEqual(expected, Frames.Read(frame));
+            }
+        );
+        _ = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            server.PublishTexture(
+                texture,
+                queue.CommandBuffer()!,
+                new MTLRegion(new MTLOrigin(90, 0, 0), new MTLSize(Width, Height, 1))
+            )
+        );
+    }
+
+    [TestMethod]
     public async Task Resize_GivesTheClientTheNewSurface()
     {
         using SyphonServer server = new(Frames.UniqueName("resize"));
