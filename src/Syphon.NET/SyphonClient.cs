@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using Metal;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Syphon.NET.Protocol;
 
 namespace Syphon.NET;
@@ -29,6 +31,9 @@ public sealed record SyphonClientOptions
     /// null.
     /// </summary>
     public IMTLDevice? Device { get; init; }
+
+    /// <summary>Where the client logs its connection and failures.</summary>
+    public ILoggerFactory? LoggerFactory { get; init; }
 }
 
 /// <summary>
@@ -36,8 +41,9 @@ public sealed record SyphonClientOptions
 /// costs no copy; the server renders the next frame into the same surface, so
 /// <see cref="SyphonFrame.Retain"/> copies a frame to keep it.
 /// </summary>
-public sealed class SyphonClient : IDisposable
+public sealed partial class SyphonClient : IDisposable
 {
+    private readonly ILogger<SyphonClient> _logger;
     private readonly ClientConnection _connection;
     private readonly SyphonClientOptions _options;
     private readonly SemaphoreSlim _frames = new(0);
@@ -68,10 +74,14 @@ public sealed class SyphonClient : IDisposable
         Server = server;
         _serverName = server.Name;
         _options = options ?? new();
+        _logger = (
+            _options.LoggerFactory ?? NullLoggerFactory.Instance
+        ).CreateLogger<SyphonClient>();
         _connection = new ClientConnection(server.Uuid);
         _connection.NewFrame += () => _frames.Release();
         _connection.Retired += () =>
         {
+            LogRetired(ServerName, server.Uuid);
             _frames.Release();
             ServerRetired?.Invoke(this, EventArgs.Empty);
         };
@@ -81,7 +91,17 @@ public sealed class SyphonClient : IDisposable
             {
                 _serverName = name;
             }
+
+            LogRenamed(name, server.Uuid);
         };
+        if (_connection.IsServerActive)
+        {
+            LogConnected(server.Name, server.AppName, server.Uuid);
+        }
+        else
+        {
+            LogUnreachable(server.Name, server.Uuid);
+        }
     }
 
     /// <summary>Raised when the server stops, on a thread of Syphon.NET's.</summary>
@@ -303,7 +323,8 @@ public sealed class SyphonClient : IDisposable
         }
         catch (Exception error)
         {
-            // Rethrown through the task: the caller awaits RunAsync and sees the failure there.
+            // Also rethrown through the task: the caller awaits RunAsync and sees the failure there.
+            LogRunFailed(error, ServerName);
             completion.TrySetException(error);
         }
         finally
@@ -314,6 +335,41 @@ public sealed class SyphonClient : IDisposable
 
     private static long MonotonicNanoseconds() =>
         (long)((Int128)Stopwatch.GetTimestamp() * 1_000_000_000 / Stopwatch.Frequency);
+
+    [LoggerMessage(
+        EventId = 70,
+        Level = LogLevel.Information,
+        Message = "Syphon client connected to server \"{Name}\" of {AppName} ({Uuid})"
+    )]
+    private partial void LogConnected(string name, string appName, string uuid);
+
+    [LoggerMessage(
+        EventId = 71,
+        Level = LogLevel.Warning,
+        Message = "Syphon server \"{Name}\" is not running; the client receives nothing ({Uuid})"
+    )]
+    private partial void LogUnreachable(string name, string uuid);
+
+    [LoggerMessage(
+        EventId = 72,
+        Level = LogLevel.Information,
+        Message = "Syphon server \"{Name}\" retired ({Uuid})"
+    )]
+    private partial void LogRetired(string name, string uuid);
+
+    [LoggerMessage(
+        EventId = 73,
+        Level = LogLevel.Debug,
+        Message = "Syphon server {Uuid} is now \"{Name}\""
+    )]
+    private partial void LogRenamed(string name, string uuid);
+
+    [LoggerMessage(
+        EventId = 74,
+        Level = LogLevel.Error,
+        Message = "Syphon client of server \"{Name}\" stopped on an error"
+    )]
+    private partial void LogRunFailed(Exception error, string name);
 }
 
 /// <summary>

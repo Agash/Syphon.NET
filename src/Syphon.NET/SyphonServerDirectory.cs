@@ -1,6 +1,9 @@
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using CoreFoundation;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Syphon.NET.Protocol;
 
 namespace Syphon.NET;
@@ -14,8 +17,9 @@ namespace Syphon.NET;
 /// As the Syphon framework's directory does, it checks that the servers it lists are alive whenever
 /// any application asks servers to announce themselves, and drops those that do not answer.
 /// </remarks>
-public sealed class SyphonServerDirectory : IDisposable
+public sealed partial class SyphonServerDirectory : IDisposable
 {
+    private readonly ILogger<SyphonServerDirectory> _logger;
     private readonly Lock _gate = new();
     private readonly IDisposable _subscription;
     private readonly List<Channel<ImmutableArray<SyphonServerDescription>>> _watchers = [];
@@ -24,8 +28,12 @@ public sealed class SyphonServerDirectory : IDisposable
     private bool _disposed;
 
     /// <summary>Starts listening and asks every running server to announce itself.</summary>
-    public SyphonServerDirectory()
+    /// <param name="loggerFactory">Where the directory logs servers coming and going.</param>
+    public SyphonServerDirectory(ILoggerFactory? loggerFactory = null)
     {
+        _logger = (
+            loggerFactory ?? NullLoggerFactory.Instance
+        ).CreateLogger<SyphonServerDirectory>();
         _subscription = NotificationHub.Subscribe(OnNotification);
         Refresh();
     }
@@ -154,6 +162,21 @@ public sealed class SyphonServerDirectory : IDisposable
 
     private void OnNotification(string name, NSDictionary? userInfo)
     {
+        try
+        {
+            Handle(name, userInfo);
+        }
+        catch (Exception error)
+        {
+            // Not rethrown: the notification arrives on the main run loop, which must keep serving
+            // every other server and directory. The failure is an application's event handler or a
+            // malformed announcement from another process.
+            LogNotificationFailed(error, name);
+        }
+    }
+
+    private void Handle(string name, NSDictionary? userInfo)
+    {
         if (name == SyphonProtocol.AnnounceRequest)
         {
             StartPing();
@@ -162,12 +185,14 @@ public sealed class SyphonServerDirectory : IDisposable
 
         if (userInfo is null)
         {
+            LogMalformed(name);
             return;
         }
 
         SyphonServerDescription server = new(userInfo);
         if (server.Uuid.Length == 0)
         {
+            LogMalformed(name);
             return;
         }
 
@@ -187,6 +212,7 @@ public sealed class SyphonServerDirectory : IDisposable
 
                 if (added)
                 {
+                    LogAnnounced(server.Name, server.AppName, server.Uuid);
                     ServerAnnounced?.Invoke(this, server);
                 }
 
@@ -205,6 +231,7 @@ public sealed class SyphonServerDirectory : IDisposable
 
                 if (updated)
                 {
+                    LogUpdated(server.Name, server.Uuid);
                     ServerUpdated?.Invoke(this, server);
                 }
 
@@ -243,7 +270,18 @@ public sealed class SyphonServerDirectory : IDisposable
                         silent = [.. _servers.Where(s => !answered.Contains(s.Uuid))];
                     }
 
-                    Retire(silent);
+                    if (silent.Length == 0)
+                    {
+                        return;
+                    }
+
+                    foreach (SyphonServerDescription server in silent)
+                    {
+                        LogSilent(server.Name, server.Uuid);
+                    }
+
+                    // On the main thread, where the directory's other events are raised.
+                    DispatchQueue.MainQueue.DispatchAsync(() => OnMain(() => Retire(silent)));
                 },
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
@@ -275,9 +313,65 @@ public sealed class SyphonServerDirectory : IDisposable
 
         foreach (SyphonServerDescription server in removed)
         {
+            LogRetired(server.Name, server.Uuid);
             ServerRetired?.Invoke(this, server);
         }
     }
+
+    private void OnMain(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception error)
+        {
+            // Not rethrown, for the reason OnNotification gives.
+            LogNotificationFailed(error, SyphonProtocol.Retire);
+        }
+    }
+
+    [LoggerMessage(
+        EventId = 90,
+        Level = LogLevel.Debug,
+        Message = "Syphon server \"{Name}\" of {AppName} announced ({Uuid})"
+    )]
+    private partial void LogAnnounced(string name, string appName, string uuid);
+
+    [LoggerMessage(
+        EventId = 91,
+        Level = LogLevel.Debug,
+        Message = "Syphon server {Uuid} is now \"{Name}\""
+    )]
+    private partial void LogUpdated(string name, string uuid);
+
+    [LoggerMessage(
+        EventId = 92,
+        Level = LogLevel.Debug,
+        Message = "Syphon server \"{Name}\" retired ({Uuid})"
+    )]
+    private partial void LogRetired(string name, string uuid);
+
+    [LoggerMessage(
+        EventId = 93,
+        Level = LogLevel.Information,
+        Message = "Syphon server \"{Name}\" did not answer an announce request and is dropped ({Uuid})"
+    )]
+    private partial void LogSilent(string name, string uuid);
+
+    [LoggerMessage(
+        EventId = 94,
+        Level = LogLevel.Warning,
+        Message = "Ignored a Syphon {Notification} notification without a server description"
+    )]
+    private partial void LogMalformed(string notification);
+
+    [LoggerMessage(
+        EventId = 95,
+        Level = LogLevel.Error,
+        Message = "Handling a Syphon {Notification} notification failed"
+    )]
+    private partial void LogNotificationFailed(Exception error, string notification);
 
     // Called holding the lock.
     private void Changed(ImmutableArray<SyphonServerDescription> servers)

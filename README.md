@@ -55,6 +55,12 @@ retired when it is disposed (or the process exits). `HasClients` and `ClientsCha
 anyone is watching; setting `Name` renames it for everyone. In OBS, add a **Syphon Client** source and
 choose "My Output".
 
+`SyphonServerOptions`, `SyphonClientOptions` and the `SyphonServerDirectory` constructor take an
+`ILoggerFactory`: servers log starting, renames, surface changes and retiring; clients log connecting
+and losing their server; directories log servers coming and going. Every failure is logged where it
+happens, including exceptions from your event handlers, which are not allowed to stop the main run
+loop.
+
 ## Find servers
 
 ```csharp

@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using Metal;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Syphon.NET.Protocol;
 
 namespace Syphon.NET;
@@ -12,6 +14,9 @@ public sealed record SyphonServerOptions
     /// application hands them (<see cref="SyphonServerDescription.ToPropertyList"/>).
     /// </summary>
     public bool IsPrivate { get; init; }
+
+    /// <summary>Where the server logs its lifecycle and failures.</summary>
+    public ILoggerFactory? LoggerFactory { get; init; }
 }
 
 /// <summary>
@@ -29,12 +34,14 @@ public sealed record SyphonServerOptions
 /// serves it with <see cref="SyphonMainLoop"/>.
 /// </para>
 /// </remarks>
-public sealed class SyphonServer : IDisposable
+public sealed partial class SyphonServer : IDisposable
 {
     private static readonly Lock s_liveGate = new();
     private static readonly HashSet<SyphonServer> s_live = [];
 
+    private readonly ILogger<SyphonServer> _logger;
     private readonly Lock _gate = new();
+    private long _frames;
     private readonly ServerConnection _connection;
     private readonly IDisposable? _discovery;
     private readonly NSObject? _activity;
@@ -54,11 +61,18 @@ public sealed class SyphonServer : IDisposable
     /// <param name="options">How the server presents itself.</param>
     public SyphonServer(string? name = null, SyphonServerOptions? options = null)
     {
+        _logger = (
+            options?.LoggerFactory ?? NullLoggerFactory.Instance
+        ).CreateLogger<SyphonServer>();
         _name = name ?? string.Empty;
         Uuid = SyphonProtocol.CreateUuid();
         _broadcasts = options?.IsPrivate != true;
         _connection = new ServerConnection(Uuid);
-        _connection.ClientsChanged += hasClients => ClientsChanged?.Invoke(this, hasClients);
+        _connection.ClientsChanged += hasClients =>
+        {
+            LogClientsChanged(Name, hasClients);
+            ClientsChanged?.Invoke(this, hasClients);
+        };
 
         // The SDK keeps a serving process out of App Nap and automatic termination while it serves.
         _activity = NSProcessInfo.ProcessInfo.BeginActivity(
@@ -76,6 +90,8 @@ public sealed class SyphonServer : IDisposable
             _discovery = NotificationHub.Subscribe(OnNotification);
             Broadcast(SyphonProtocol.Announce);
         }
+
+        LogStarted(_name, Uuid, !_broadcasts);
     }
 
     /// <summary>
@@ -102,6 +118,7 @@ public sealed class SyphonServer : IDisposable
                 _name = value ?? string.Empty;
             }
 
+            LogRenamed(Name, Uuid);
             _connection.SetName(Name);
             if (_broadcasts)
             {
@@ -209,8 +226,16 @@ public sealed class SyphonServer : IDisposable
             new MTLOrigin(0, 0, 0)
         );
         blit.EndEncoding();
-        commandBuffer.AddCompletedHandler(_ =>
+
+        commandBuffer.AddCompletedHandler(completed =>
         {
+            if (completed.Status == MTLCommandBufferStatus.Error)
+            {
+                // The copy did not happen; clients keep the previous frame.
+                LogCopyFailed(Name, completed.Error?.LocalizedDescription);
+                return;
+            }
+
             if (!_disposed)
             {
                 Publish();
@@ -275,6 +300,8 @@ public sealed class SyphonServer : IDisposable
 
         _surfaceTexture?.Dispose();
         _surface?.Dispose();
+        long frames = Interlocked.Read(ref _frames);
+        LogRetired(Name, Uuid, frames);
     }
 
     internal void EndFrame(bool publish)
@@ -306,10 +333,12 @@ public sealed class SyphonServer : IDisposable
 
         if (announce is uint surfaceId)
         {
+            LogSurface(Name, surfaceId);
             _connection.SetSurface(surfaceId);
         }
 
         _connection.PublishNewFrame();
+        _ = Interlocked.Increment(ref _frames);
     }
 
     private IOSurface.IOSurface EnsureSurface(int width, int height)
@@ -339,7 +368,16 @@ public sealed class SyphonServer : IDisposable
         // Any application's announce request, a directory looking for servers, is answered.
         if (name == SyphonProtocol.AnnounceRequest && !_disposed)
         {
-            Broadcast(SyphonProtocol.Announce);
+            try
+            {
+                Broadcast(SyphonProtocol.Announce);
+            }
+            catch (Exception error)
+            {
+                // Not rethrown: this runs on the main run loop, which must keep serving the rest of
+                // the process. The next announce request tries again.
+                LogAnnounceFailed(error, Name);
+            }
         }
     }
 
@@ -374,6 +412,55 @@ public sealed class SyphonServer : IDisposable
             throw new InvalidOperationException("A frame is open; publish or dispose it first.");
         }
     }
+
+    [LoggerMessage(
+        EventId = 50,
+        Level = LogLevel.Information,
+        Message = "Syphon server \"{Name}\" started ({Uuid}, private: {IsPrivate})"
+    )]
+    private partial void LogStarted(string name, string uuid, bool isPrivate);
+
+    [LoggerMessage(
+        EventId = 51,
+        Level = LogLevel.Debug,
+        Message = "Syphon server \"{Name}\" publishes in surface {SurfaceId}"
+    )]
+    private partial void LogSurface(string name, uint surfaceId);
+
+    [LoggerMessage(
+        EventId = 52,
+        Level = LogLevel.Debug,
+        Message = "Syphon server \"{Name}\" has clients: {HasClients}"
+    )]
+    private partial void LogClientsChanged(string name, bool hasClients);
+
+    [LoggerMessage(
+        EventId = 53,
+        Level = LogLevel.Information,
+        Message = "Syphon server {Uuid} renamed to \"{Name}\""
+    )]
+    private partial void LogRenamed(string name, string uuid);
+
+    [LoggerMessage(
+        EventId = 54,
+        Level = LogLevel.Information,
+        Message = "Syphon server \"{Name}\" retired after {Frames} frames ({Uuid})"
+    )]
+    private partial void LogRetired(string name, string uuid, long frames);
+
+    [LoggerMessage(
+        EventId = 55,
+        Level = LogLevel.Error,
+        Message = "Syphon server \"{Name}\" did not publish a frame: its GPU copy failed ({Reason})"
+    )]
+    private partial void LogCopyFailed(string name, string? reason);
+
+    [LoggerMessage(
+        EventId = 56,
+        Level = LogLevel.Error,
+        Message = "Syphon server \"{Name}\" could not answer an announce request"
+    )]
+    private partial void LogAnnounceFailed(Exception error, string name);
 }
 
 /// <summary>
