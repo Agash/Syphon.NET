@@ -29,13 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0        # MinVer needs full history
-          submodules: recursive # Syphon framework source for the native shim
+          fetch-depth: 0 # MinVer needs full history
 
       # Deliberately not pinned to a fixed Xcode. The macOS SDK pack states a minimum Xcode and the workload
-      # manifest is installed unpinned below, so a hard pin goes stale the moment the manifest moves: pinning
-      # 26.5 while the pack required 26.6 failed this job on every run. The image default tracks the newest
-      # installed Xcode, which is what the current manifest is built against. Reported so the log names it.
+      # manifest is installed unpinned below, so a hard pin goes stale the moment the manifest moves. The image
+      # default tracks the newest installed Xcode, which is what the current manifest is built against.
+      # Reported so the log names it.
       - name: Report selected Xcode
         run: |
           xcode-select -p
@@ -48,13 +47,21 @@ jobs:
             10.0.x
             11.0.x
 
-      # The net11.0-macos TFM requires the macos workload; the preview SDK no longer bundles it, so install
+      # The net11.0-macos TFM requires the macos workload; the preview SDK does not bundle it, so install
       # it explicitly before restore (NETSDK1147 otherwise).
       - name: Install macos workload
         run: dotnet workload install macos
 
-      - name: Build native shim (universal arm64 + x86_64)
-        run: bash native/build-native.sh
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12" # syphon-python ships wheels for CPython 3.8 to 3.12
+
+      # The Syphon framework as the interop tests' peer, in a process of its own.
+      - name: Install syphon-python
+        run: |
+          python3 -m venv "$HOME/syphon-venv"
+          "$HOME/syphon-venv/bin/pip" install --quiet --upgrade pip
+          "$HOME/syphon-venv/bin/pip" install --quiet syphon-python numpy pyobjc-framework-Cocoa
 
       - name: Restore
         run: dotnet restore Syphon.NET.slnx
@@ -67,13 +74,13 @@ jobs:
       - name: Build
         run: dotnet build Syphon.NET.slnx --no-restore -c Release
 
-      - name: Test (value-type)
-        run: dotnet test --solution Syphon.NET.slnx --no-build -c Release -- --coverage --coverage-settings coverage.settings.xml --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
-             --filter "TestCategory!=Transport&TestCategory!=Directory"
+      - name: Test
+        run: >-
+          dotnet test --solution Syphon.NET.slnx --no-build -c Release
+          --coverage --coverage-settings coverage.settings.xml --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
 
       - name: Summarize coverage
-        # Renders the cobertura totals into the run summary. Uploading the raw XML alone means nobody
-        # ever looks at it; this puts the numbers on the run page itself.
+        # Renders the cobertura totals into the run summary, so the numbers are on the run page itself.
         if: always()
         shell: bash
         run: |
@@ -85,8 +92,6 @@ jobs:
               print('### Coverage\n\nNo coverage report was produced.')
               raise SystemExit(0)
 
-          # Multi-targeted runs emit one report per TFM; they cover the same code, so report the first
-          # and note how many were produced rather than double-counting.
           root = ET.parse(files[0]).getroot()
 
           def pct(attr):
@@ -97,20 +102,6 @@ jobs:
           print('| --- | ---: | ---: | ---: |')
           print(f"| Lines | {root.get('lines-covered')} | {root.get('lines-valid')} | {pct('line-rate'):.1f}% |")
           print(f"| Branches | {root.get('branches-covered')} | {root.get('branches-valid')} | {pct('branch-rate'):.1f}% |")
-
-          packages = root.findall('.//package')
-          if packages:
-              print('\n<details><summary>Per assembly</summary>\n')
-              print('| Assembly | Lines | Branches |')
-              print('| --- | ---: | ---: |')
-              for p in sorted(packages, key=lambda p: p.get('name') or ''):
-                  lr = float(p.get('line-rate') or 0) * 100
-                  br = float(p.get('branch-rate') or 0) * 100
-                  print(f"| {p.get('name')} | {lr:.1f}% | {br:.1f}% |")
-              print('\n</details>')
-
-          if len(files) > 1:
-              print(f"\n_{len(files)} reports produced (one per target framework); totals shown for `{files[0]}`._")
           PY
 
       - name: Upload coverage report
@@ -119,75 +110,15 @@ jobs:
         with:
           name: coverage
           if-no-files-found: warn
-          path: '**/coverage.cobertura.xml'
+          path: "**/coverage.cobertura.xml"
 
-      - name: Test (frame transport, byte-exact)
-        # Gating: a server publishes and a loopback client receives byte-exact, with no dependency
-        # on the distributed-notification directory. This works on headless runners with a Metal
-        # device and is the authoritative end-to-end read+write check.
-        run: dotnet test --solution Syphon.NET.slnx --no-build -c Release
-             --filter "TestCategory=Transport"
-
-      - name: Test (directory discovery)
-        # Gating: discovery works on any Metal-capable host (incl. headless CI) once the run loop
-        # is pumped via SyphonServerDirectory.PumpEvents.
-        run: dotnet test --solution Syphon.NET.slnx --no-build -c Release
-             --filter "TestCategory=Directory"
-
-      - name: Native probe (Metal + loopback transport + directory)
-        # Diagnostic: prints which layers actually work on the runner (Metal device,
-        # byte-exact frame transport via the loopback client, distributed-notification directory).
-        # Non-gating while we learn what a headless runner supports.
-        continue-on-error: true
-        run: dotnet run --project samples/Syphon.NET.Peer -c Release --no-build
-
-      - name: Cross-process transport (separate processes)
-        # Gating: spawns a separate server process and connects via its exported description (no
-        # directory), proving frames cross the real mach/IOSurface boundary byte-exact.
-        run: dotnet run --project samples/Syphon.NET.Peer -c Release --no-build -- crosstest
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"   # syphon-python ships wheels for cp38-cp312 only
-
-      - name: Install syphon-python (independent foreign peer)
+      # IsAotCompatible only runs the analyzers. Publishing and running a real program is what proves
+      # the library works as Native AOT.
+      - name: Native AOT publish and run
         run: |
-          python3 -m venv /tmp/sp
-          /tmp/sp/bin/pip install --quiet --upgrade pip
-          /tmp/sp/bin/pip install --quiet syphon-python numpy pyobjc-framework-Cocoa
-
-      - name: Foreign interop A (syphon-python server -> Syphon.NET client)
-        # Gating: an independent Syphon implementation publishes; we discover it via the directory
-        # and receive its frames byte-exact. This is the real cross-implementation receive case.
-        run: |
-          /tmp/sp/bin/python tests/interop/syphon_peer.py server --name PyForeign --w 64 --h 64 --seconds 45 &
-          PY=$!
-          sleep 4
-          dotnet run --project samples/Syphon.NET.Peer -c Release --no-build -- foreign-client --name PyForeign --timeout 25
-          RC=$?
-          kill $PY 2>/dev/null || true
-          exit $RC
-
-      - name: Foreign interop B (Syphon.NET server -> syphon-python client)
-        # Gating: a foreign client receives our published frames byte-exact. Connects via our
-        # exported description (syphon-python's directory wrapper crashes on an iconless server).
-        run: |
-          # Launch the app-bundle apphost directly rather than via `dotnet run`. On a headless runner the standalone
-          # publisher stalls under the `dotnet run` supervisor; running the managed dll under `dotnet` instead aborts
-          # in the publish loop (no ObjC/app init). The apphost is the form that works - it is exactly what the
-          # (passing) cross-process test spawns via Environment.ProcessPath. Byte-exact transport is otherwise identical.
-          APP=$(find samples/Syphon.NET.Peer/bin/Release -path '*osx-arm64*MacOS/Syphon.NET.Peer' -type f | head -1)
-          echo "server apphost: $APP"
-          "$APP" server --name DotNetForeign --w 64 --h 64 --seconds 60 --desc-file /tmp/dn_desc.bin --ready-file /tmp/dn_ready > /tmp/dn_srv.log 2>&1 &
-          CS=$!
-          # Wait up to 30s for the server to export its description before the client reads it (else the client
-          # races ahead to a missing desc file). Dump the server log if it never signals ready.
-          for i in $(seq 1 150); do [ -f /tmp/dn_ready ] && break; sleep 0.2; done
-          if [ ! -f /tmp/dn_ready ]; then echo "::error::Syphon.NET server never wrote its ready file"; echo "--- server log ---"; cat /tmp/dn_srv.log || true; kill $CS 2>/dev/null || true; exit 1; fi
-          /tmp/sp/bin/python tests/interop/syphon_peer.py client --name DotNetForeign --desc-file /tmp/dn_desc.bin --w 64 --h 64 --timeout 25
-          RC=$?
-          kill $CS 2>/dev/null || true
-          exit $RC
+          dotnet publish samples/Syphon.NET.Smoke/Syphon.NET.Smoke.csproj -c Release
+          app=$(find samples/Syphon.NET.Smoke/bin/Release -path '*Syphon.NET.Smoke.app/Contents/MacOS/Syphon.NET.Smoke' -type f | head -1)
+          perl -e 'alarm 60; exec @ARGV' "$app"
 
       - name: Pack
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
@@ -216,7 +147,7 @@ jobs:
     # Publishing runs only when a GitHub release is published (or manually dispatched), matching
     # the other Agash packages. Requires a NuGet.org trusted-publishing policy for this package.
     if: (github.event_name == 'release' && github.event.action == 'published') || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest   # the package is platform-agnostic; no macOS needed to push it
+    runs-on: ubuntu-latest # the package is platform-agnostic; no macOS needed to push it
     # Declaring an environment is what makes GitHub record a deployment, which is what
     # surfaces the Deployments tab and the package link on the repo home page.
     environment:
@@ -224,7 +155,7 @@ jobs:
       url: https://www.nuget.org/packages/Syphon.NET
     permissions:
       contents: read
-      id-token: write   # OIDC for NuGet.org trusted publishing
+      id-token: write # OIDC for NuGet.org trusted publishing
 
     steps:
       - name: Download package artifact

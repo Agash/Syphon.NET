@@ -15,8 +15,8 @@ permissions:
 jobs:
   analyze:
     name: Analyze C#
-    # macos-26 ships the Xcode toolchain the net11.0-macos workload expects, and the native shim only
-    # builds on macOS. CodeQL cannot analyse what it cannot compile, so this has to match the build job.
+    # macos-26 ships the Xcode toolchain the net11.0-macos workload expects. CodeQL cannot analyse what
+    # it cannot compile, so this has to match the build job.
     runs-on: macos-26
     permissions:
       security-events: write
@@ -27,8 +27,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-        with:
-          submodules: recursive
 
       - name: Setup .NET SDK
         # Install both SDKs and let global.json pick: setup-dotnet resolving the pinned preview from
@@ -49,9 +47,6 @@ jobs:
       # solution layout, and a build it cannot complete yields no analysis at all.
       - name: Install macos workload
         run: dotnet workload install macos
-
-      - name: Build native shim (universal arm64 + x86_64)
-        run: bash native/build-native.sh
 
       - name: Build solution
         run: dotnet build Syphon.NET.slnx --configuration Release
