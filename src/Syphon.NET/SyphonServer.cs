@@ -29,6 +29,11 @@ public sealed record SyphonServerOptions
 /// frame into it; a client reads the same surface, so publishing costs no copy between processes.
 /// </para>
 /// <para>
+/// Frames are top row first, as Metal lays out a texture and as the Syphon framework's Metal server
+/// publishes them. Clients that read surfaces through OpenGL, such as OBS, show them upside down; OBS
+/// turns the source upright with Transform, Flip Vertical.
+/// </para>
+/// <para>
 /// Directories started after the server find it by asking servers to announce themselves, which it
 /// hears through the main thread's run loop: an AppKit or MAUI application serves it, a console host
 /// serves it with <see cref="SyphonMainLoop"/>.

@@ -58,6 +58,10 @@ retired when it is disposed (or the process exits). `HasClients` and `ClientsCha
 anyone is watching; setting `Name` renames it for everyone. In OBS, add a **Syphon Client** source and
 choose "My Output".
 
+Frames are top row first, as Metal lays out a texture and as the Syphon framework's Metal server
+publishes them. OBS reads Syphon surfaces through OpenGL and shows them upside down; turn the source
+upright in OBS with **Transform, Flip Vertical**.
+
 `SyphonServerOptions`, `SyphonClientOptions` and the `SyphonServerDirectory` constructor take an
 `ILoggerFactory`: servers log starting, renames, surface changes and retiring; clients log connecting
 and losing their server; directories log servers coming and going. Every failure is logged where it
