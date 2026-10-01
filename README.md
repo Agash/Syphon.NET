@@ -59,8 +59,10 @@ anyone is watching; setting `Name` renames it for everyone. In OBS, add a **Syph
 choose "My Output".
 
 Frames are top row first, as Metal lays out a texture and as the Syphon framework's Metal server
-publishes them. OBS reads Syphon surfaces through OpenGL and shows them upside down; turn the source
-upright in OBS with **Transform, Flip Vertical**.
+publishes them; the framework's OpenGL server writes them bottom row first, and Syphon carries no
+orientation to tell the two apart. OBS samples every Syphon surface as OpenGL's, so it shows Metal servers
+(this one, and the framework's own) upside down; turn the source upright in OBS with
+**Transform, Flip Vertical**.
 
 `SyphonServerOptions`, `SyphonClientOptions` and the `SyphonServerDirectory` constructor take an
 `ILoggerFactory`: servers log starting, renames, surface changes and retiring; clients log connecting
@@ -119,6 +121,10 @@ await client.RunAsync((in SyphonFrame frame) =>
     Console.WriteLine($"#{frame.FrameNumber} {frame.Width}x{frame.Height}");
 }, cancellationToken);
 ```
+
+Frames are the server's surface as it wrote it, as the Syphon framework's Metal client hands them on:
+top row first from a Metal server, bottom row first from an OpenGL one. Syphon carries no orientation, so
+a receiver that shows OpenGL servers upright flips them itself, by choice per server.
 
 `RunAsync` delivers each new frame as the server announces it, on a thread of its own, and returns when
 the server retires. For a loop of your own, `TryReceive` borrows the current frame:
