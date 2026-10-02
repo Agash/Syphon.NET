@@ -7,6 +7,11 @@ namespace Syphon.NET.Protocol;
 // own, registers with the server's port for info and frames, and follows the surface the server
 // names. A frame is new when the server announces one, which it does once the frame is in the
 // surface, or when the surface changes.
+//
+// A server tells its registered clients it is retiring, but registering is a message the server reads
+// later: one that retires first never knows this client and only says so in the retire notification
+// every Syphon application sees. The connection follows that notification too, so a client made just
+// before its server went away still learns it is gone.
 internal sealed partial class ClientConnection : IDisposable
 {
     private readonly Lock _gate = new();
@@ -17,10 +22,12 @@ internal sealed partial class ClientConnection : IDisposable
     private IOSurface.IOSurface? _surface;
     private long _frame;
     private bool _serverActive = true;
+    private readonly IDisposable _retirements;
 
     public ClientConnection(string serverUuid)
     {
         _serverUuid = serverUuid;
+        _retirements = NotificationHub.Subscribe(OnNotification);
         _receiver =
             MessageReceiver.TryCreate(_uuid, OnMessage)
             ?? throw new SyphonException(
@@ -103,6 +110,7 @@ internal sealed partial class ClientConnection : IDisposable
             }
         }
 
+        _retirements.Dispose();
         _receiver.Dispose();
     }
 
@@ -147,18 +155,41 @@ internal sealed partial class ClientConnection : IDisposable
                 Renamed?.Invoke(name);
                 break;
             case ClientMessage.RetireServer:
-                lock (_gate)
-                {
-                    _serverActive = false;
-                    _surface?.Dispose();
-                    _surface = null;
-                }
-
-                Retired?.Invoke();
+                Retire();
                 break;
             default:
                 break;
         }
+    }
+
+    private void OnNotification(string name, NSDictionary? userInfo)
+    {
+        if (
+            name == SyphonProtocol.Retire
+            && userInfo is not null
+            && new SyphonServerDescription(userInfo).Uuid == _serverUuid
+        )
+        {
+            Retire();
+        }
+    }
+
+    // Once, whichever of the server's message and the retire notification comes first.
+    private void Retire()
+    {
+        lock (_gate)
+        {
+            if (!_serverActive)
+            {
+                return;
+            }
+
+            _serverActive = false;
+            _surface?.Dispose();
+            _surface = null;
+        }
+
+        Retired?.Invoke();
     }
 
     // Not in Microsoft's IOSurface binding: the global lookup by ID, which Syphon's surfaces are
