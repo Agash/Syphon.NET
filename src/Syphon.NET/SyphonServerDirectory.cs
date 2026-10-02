@@ -26,11 +26,17 @@ public sealed partial class SyphonServerDirectory : IDisposable
     private ImmutableArray<SyphonServerDescription> _servers = [];
     private HashSet<string>? _pings;
     private bool _disposed;
+    private readonly TimeProvider _time;
 
     /// <summary>Starts listening and asks every running server to announce itself.</summary>
     /// <param name="loggerFactory">Where the directory logs servers coming and going.</param>
-    public SyphonServerDirectory(ILoggerFactory? loggerFactory = null)
+    /// <param name="timeProvider">The clock announce timeouts run on; the system's when null.</param>
+    public SyphonServerDirectory(
+        ILoggerFactory? loggerFactory = null,
+        TimeProvider? timeProvider = null
+    )
     {
+        _time = timeProvider ?? TimeProvider.System;
         _logger = (
             loggerFactory ?? NullLoggerFactory.Instance
         ).CreateLogger<SyphonServerDirectory>();
@@ -258,7 +264,7 @@ public sealed partial class SyphonServerDirectory : IDisposable
             _pings = [with(StringComparer.Ordinal)];
         }
 
-        _ = Task.Delay(SyphonProtocol.AnnounceTimeout)
+        _ = Task.Delay(SyphonProtocol.AnnounceTimeout, _time)
             .ContinueWith(
                 _ =>
                 {
