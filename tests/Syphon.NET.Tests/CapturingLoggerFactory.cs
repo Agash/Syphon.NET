@@ -22,6 +22,17 @@ internal sealed class CapturingLoggerFactory : ILoggerFactory
 
     public bool Has(int eventId) => Entries.Any(e => e.EventId == eventId);
 
+    // A directory logs every server on the machine, not only the test's: these pick the test's own.
+    public LogEntry Single(int eventId, string about) =>
+        Entries.Single(e =>
+            e.EventId == eventId && e.Message.Contains(about, StringComparison.Ordinal)
+        );
+
+    public bool Has(int eventId, string about) =>
+        Entries.Any(e =>
+            e.EventId == eventId && e.Message.Contains(about, StringComparison.Ordinal)
+        );
+
     public ILogger CreateLogger(string categoryName) => new Logger(categoryName, _entries);
 
     public void AddProvider(ILoggerProvider provider) { }

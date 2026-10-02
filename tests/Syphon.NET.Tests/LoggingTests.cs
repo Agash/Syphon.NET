@@ -35,7 +35,7 @@ public sealed class LoggingTests
         server.Dispose();
         await retired.Task.WaitAsync(Timeout, cancellationToken);
         client.Dispose();
-        await WaitUntilAsync(() => logs.Has(92), cancellationToken);
+        await WaitUntilAsync(() => logs.Has(92, name), cancellationToken);
 
         LogEntry started = logs.Single(50);
         Assert.AreEqual(LogLevel.Information, started.Level);
@@ -44,7 +44,7 @@ public sealed class LoggingTests
         StringAssert.Contains(logs.Single(54).Message, "2 frames");
         StringAssert.Contains(logs.Single(70).Message, name);
         Assert.AreEqual(LogLevel.Information, logs.Single(72).Level);
-        StringAssert.Contains(logs.Single(90).Message, name);
+        _ = logs.Single(90, name);
         Assert.IsFalse(logs.Entries.Any(static e => e.Level >= LogLevel.Warning));
     }
 
