@@ -82,6 +82,70 @@ public sealed class ServerClientTests
         _ = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => server.BeginFrame(0, Height));
     }
 
+    // A frame rendered on the GPU is published when its work signals, with no wait on the CPU.
+    [TestMethod]
+    public async Task BeginFrame_PublishedOnASharedEvent_ReachesClientsOnceSignalled()
+    {
+        IMTLDevice device =
+            MTLDevice.SystemDefault ?? throw new AssertInconclusiveException("No Metal device.");
+        using IMTLCommandQueue queue = device.CreateCommandQueue()!;
+        using IMTLSharedEvent rendered = device.CreateSharedEvent()!;
+        using SyphonServer server = new(Frames.UniqueName("event"));
+        using SyphonClient client = new(server.Description);
+        byte[] pixels = Frames.Pattern(6, Width, Height);
+        using IMTLTexture source = device.CreateTexture(
+            MTLTextureDescriptor.CreateTexture2DDescriptor(
+                MTLPixelFormat.BGRA8Unorm,
+                Width,
+                Height,
+                false
+            )
+        )!;
+        unsafe
+        {
+            fixed (byte* data = pixels)
+            {
+                source.ReplaceRegion(
+                    new MTLRegion(new MTLOrigin(0, 0, 0), new MTLSize(Width, Height, 1)),
+                    0,
+                    (nint)data,
+                    Width * 4
+                );
+            }
+        }
+
+        // The work waits for a gate the test opens, so the frame is provably unpublished until then.
+        using IMTLSharedEvent gate = device.CreateSharedEvent()!;
+        using (SyphonServerFrame frame = server.BeginFrame(Width, Height))
+        {
+            using IMTLTexture target = frame.CreateTexture(device);
+            IMTLCommandBuffer buffer = queue.CommandBuffer()!;
+            buffer.EncodeWait(gate, 1);
+            IMTLBlitCommandEncoder blit = buffer.BlitCommandEncoder!;
+            blit.CopyFromTexture(
+                source,
+                0,
+                0,
+                new MTLOrigin(0, 0, 0),
+                new MTLSize(Width, Height, 1),
+                target,
+                0,
+                0,
+                new MTLOrigin(0, 0, 0)
+            );
+            blit.EndEncoding();
+            buffer.EncodeSignal(rendered, 1);
+            buffer.Commit();
+            frame.Publish(rendered, 1);
+        }
+
+        await Task.Yield();
+        Assert.IsFalse(client.HasNewFrame, "published before the GPU rendered the frame");
+        gate.SignaledValue = 1;
+        await WaitUntilAsync(() => client.HasNewFrame);
+        _ = ReceiveOne(client, frame => CollectionAssert.AreEqual(pixels, Frames.Read(frame)));
+    }
+
     [TestMethod]
     public async Task PublishTexture_CopiesAMetalTextureOnTheGpu()
     {

@@ -162,7 +162,7 @@ public sealed partial class SyphonServer : IDisposable
 
     /// <summary>
     /// Takes the server's surface for the application to render the next frame into, with no copy;
-    /// <see cref="SyphonServerFrame.Publish"/> publishes it. Syphon has no lock: clients may read the
+    /// <see cref="SyphonServerFrame.Publish()"/> publishes it. Syphon has no lock: clients may read the
     /// surface while it is being written, so render in one GPU submission and publish when it completes.
     /// </summary>
     /// <param name="width">The frame's width; the surface is recreated when it changes.</param>
@@ -348,6 +348,34 @@ public sealed partial class SyphonServer : IDisposable
         long frames = Interlocked.Read(ref _frames);
         LogRetired(Name, Uuid, frames);
     }
+
+    // Publishes the open frame once the GPU work that renders it signals the event, from Metal's
+    // listener thread: nothing waits for the GPU.
+    internal void EndFrame(IMTLSharedEvent rendered, ulong value)
+    {
+        if (!_frameOpen)
+        {
+            return;
+        }
+
+        _frameOpen = false;
+        rendered.NotifyListener(
+            Listener,
+            value,
+            (_, _) =>
+            {
+                if (!_disposed)
+                {
+                    Publish();
+                }
+            }
+        );
+    }
+
+    // One listener thread for every server's frames.
+    private static MTLSharedEventListener Listener => s_listener.Value;
+
+    private static readonly Lazy<MTLSharedEventListener> s_listener = new(() => new());
 
     internal void EndFrame(bool publish)
     {
@@ -537,7 +565,24 @@ public readonly ref struct SyphonServerFrame : IDisposable
     /// <returns>The texture; dispose it when the frame is rendered.</returns>
     public IMTLTexture CreateTexture(IMTLDevice device) => Surfaces.Texture(device, Surface);
 
-    /// <summary>Publishes what was rendered as the next frame.</summary>
+    /// <summary>
+    /// Publishes the frame once GPU work rendering it signals <paramref name="rendered"/> to
+    /// <paramref name="value"/>, without waiting for it: Syphon has no lock on its surface, so clients
+    /// are told of a frame only when it is whole, as Syphon's own Metal server does from a command
+    /// buffer's completion. The surface may be rendered into again by work ordered after this one.
+    /// </summary>
+    /// <param name="rendered">An event the rendering work signals, on the device that renders.</param>
+    /// <param name="value">The value it signals once the frame is rendered.</param>
+    public void Publish(IMTLSharedEvent rendered, ulong value)
+    {
+        ArgumentNullException.ThrowIfNull(rendered);
+        (_server ?? throw new InvalidOperationException("The frame was not opened.")).EndFrame(
+            rendered,
+            value
+        );
+    }
+
+    /// <summary>Publishes what was rendered as the next frame; the rendering has finished.</summary>
     public void Publish() =>
         (_server ?? throw new InvalidOperationException("The frame was not opened.")).EndFrame(
             publish: true
