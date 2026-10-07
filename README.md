@@ -53,6 +53,21 @@ using (SyphonServerFrame frame = server.BeginFrame(1920, 1080))
 server.PublishPixels(bgraPixels, width: 1920, height: 1080);
 ```
 
+Syphon has no lock on its surface, so a frame must be whole before clients are told of it. `frame.Publish()`
+announces it at once, for work that has already finished; `frame.Publish(rendered, value)` announces it
+when your rendering work signals an `MTLSharedEvent` to that value, without the CPU waiting for the GPU,
+as Syphon's own Metal server does from a command buffer's completion:
+
+```csharp
+using (SyphonServerFrame frame = server.BeginFrame(1920, 1080))
+{
+    Render(frame.CreateTexture(device), commandBuffer);
+    commandBuffer.EncodeSignal(rendered, ++value);
+    commandBuffer.Commit();
+    frame.Publish(rendered, value);
+}
+```
+
 Frames are 8-bit BGRA, as every Syphon server's are. The server is announced when it is created and
 retired when it is disposed (or the process exits). `HasClients` and `ClientsChanged` tell whether
 anyone is watching; setting `Name` renames it for everyone. In OBS, add a **Syphon Client** source and
@@ -65,7 +80,7 @@ orientation to tell the two apart. OBS samples every Syphon surface as OpenGL's,
 **Transform, Flip Vertical**.
 
 `SyphonServerOptions`, `SyphonClientOptions` and the `SyphonServerDirectory` constructor take an
-`ILoggerFactory`: servers log starting, renames, surface changes and retiring; clients log connecting
+`ILoggerFactory`, and the directory a `TimeProvider` for its announce timeouts: servers log starting, renames, surface changes and retiring; clients log connecting
 and losing their server; directories log servers coming and going. Every failure is logged where it
 happens, including exceptions from your event handlers, which are not allowed to stop the main run
 loop.
