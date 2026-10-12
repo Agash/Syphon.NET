@@ -52,7 +52,7 @@ jobs:
       - name: Install macos workload
         run: dotnet workload install macos
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12" # syphon-python ships wheels for CPython 3.8 to 3.12
 
