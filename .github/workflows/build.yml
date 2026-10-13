@@ -16,9 +16,8 @@ env:
 jobs:
   build_and_test:
     name: Build, Test, and Pack
-    # macos-26 is the image that ships the Xcode 26.x toolchain the net11.0-macos workload expects (macos-latest
-    # only carries Xcode 16.x). Matches the toolchain of the native desktop head builds.
-    runs-on: macos-26
+    # The macOS pack of the .NET 11 rc.2 workload requires Xcode 27.0, the default of the xcode-27 image.
+    runs-on: xcode-27
 
     permissions:
       contents: read
@@ -31,10 +30,7 @@ jobs:
         with:
           fetch-depth: 0 # MinVer needs full history
 
-      # Deliberately not pinned to a fixed Xcode. The macOS SDK pack states a minimum Xcode and the workload
-      # manifest is installed unpinned below, so a hard pin goes stale the moment the manifest moves. The image
-      # default tracks the newest installed Xcode, which is what the current manifest is built against.
-      # Reported so the log names it.
+      # The image default, reported so the log names it.
       - name: Report selected Xcode
         run: |
           xcode-select -p
@@ -47,10 +43,13 @@ jobs:
             10.0.x
             11.0.x
 
-      # The net11.0-macos TFM requires the macos workload; the preview SDK does not bundle it, so install
-      # it explicitly before restore (NETSDK1147 otherwise).
+      # The net11.0-macos TFM requires the macos workload (NETSDK1147 otherwise).
+      # The manifests come from .github/workloads.json, taken from the 11.0.100-rc.2 workload set.
+      # A plain install resolves the whole set, whose Android manifest (37.2.0-rc.2.84) is missing
+      # from nuget.org. The packs require Xcode 27.0, the xcode-27 image's default.
       - name: Install macos workload
-        run: dotnet workload install macos
+        run: |
+          dotnet workload install macos --from-rollback-file .github/workloads.json
 
       - uses: actions/setup-python@v7
         with:

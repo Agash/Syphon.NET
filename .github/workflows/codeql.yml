@@ -15,9 +15,9 @@ permissions:
 jobs:
   analyze:
     name: Analyze C#
-    # macos-26 ships the Xcode toolchain the net11.0-macos workload expects. CodeQL cannot analyse what
+    # xcode-27 ships the Xcode the net11.0-macos workload expects. CodeQL cannot analyse what
     # it cannot compile, so this has to match the build job.
-    runs-on: macos-26
+    runs-on: xcode-27
     permissions:
       security-events: write
       packages: read
@@ -46,7 +46,7 @@ jobs:
       # Manual build mode: the autobuilder does not know about the pinned preview SDK or the
       # solution layout, and a build it cannot complete yields no analysis at all.
       - name: Install macos workload
-        run: dotnet workload install macos
+        run: dotnet workload install macos --from-rollback-file .github/workloads.json
 
       - name: Build solution
         run: dotnet build Syphon.NET.slnx --configuration Release

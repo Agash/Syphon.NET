@@ -22,7 +22,7 @@ permissions:
 jobs:
   restore:
     name: Restore
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -35,7 +35,7 @@ jobs:
             11.0.x
 
       - name: Install the macOS workload
-        run: dotnet workload install macos
+        run: dotnet workload install macos --from-rollback-file .github/workloads.json
 
       - name: Restore
         # component-detection reads obj/project.assets.json; on a bare checkout it finds nothing and
