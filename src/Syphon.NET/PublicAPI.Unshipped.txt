@@ -1,0 +1,111 @@
+override Syphon.NET.SyphonClientOptions.Equals(object? obj) -> bool
+override Syphon.NET.SyphonClientOptions.GetHashCode() -> int
+override Syphon.NET.SyphonClientOptions.ToString() -> string!
+override Syphon.NET.SyphonServerDescription.Equals(object? obj) -> bool
+override Syphon.NET.SyphonServerDescription.GetHashCode() -> int
+override Syphon.NET.SyphonServerDescription.ToString() -> string!
+override Syphon.NET.SyphonServerOptions.Equals(object? obj) -> bool
+override Syphon.NET.SyphonServerOptions.GetHashCode() -> int
+override Syphon.NET.SyphonServerOptions.ToString() -> string!
+static Syphon.NET.SyphonClientOptions.operator !=(Syphon.NET.SyphonClientOptions? left, Syphon.NET.SyphonClientOptions? right) -> bool
+static Syphon.NET.SyphonClientOptions.operator ==(Syphon.NET.SyphonClientOptions? left, Syphon.NET.SyphonClientOptions? right) -> bool
+static Syphon.NET.SyphonMainLoop.Run(System.Func<System.Threading.Tasks.Task!>! work) -> void
+static Syphon.NET.SyphonMainLoop.Run(System.Func<System.Threading.Tasks.Task<int>!>! work) -> int
+static Syphon.NET.SyphonServerDescription.FromPropertyList(System.ReadOnlySpan<byte> propertyList) -> Syphon.NET.SyphonServerDescription!
+static Syphon.NET.SyphonServerOptions.operator !=(Syphon.NET.SyphonServerOptions? left, Syphon.NET.SyphonServerOptions? right) -> bool
+static Syphon.NET.SyphonServerOptions.operator ==(Syphon.NET.SyphonServerOptions? left, Syphon.NET.SyphonServerOptions? right) -> bool
+Syphon.NET.SyphonClient
+Syphon.NET.SyphonClient.Dispose() -> void
+Syphon.NET.SyphonClient.HasNewFrame.get -> bool
+Syphon.NET.SyphonClient.IsValid.get -> bool
+Syphon.NET.SyphonClient.RunAsync(Syphon.NET.SyphonFrameHandler! handler, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Syphon.NET.SyphonClient.Server.get -> Syphon.NET.SyphonServerDescription!
+Syphon.NET.SyphonClient.ServerName.get -> string!
+Syphon.NET.SyphonClient.ServerRetired -> System.EventHandler?
+Syphon.NET.SyphonClient.SyphonClient(Syphon.NET.SyphonServerDescription! server, Syphon.NET.SyphonClientOptions? options = null) -> void
+Syphon.NET.SyphonClient.TryReceive(out Syphon.NET.SyphonFrame frame) -> Syphon.NET.SyphonReceiveResult
+Syphon.NET.SyphonClientOptions
+Syphon.NET.SyphonClientOptions.<Clone>$() -> Syphon.NET.SyphonClientOptions!
+Syphon.NET.SyphonClientOptions.Device.get -> Metal.IMTLDevice?
+Syphon.NET.SyphonClientOptions.Device.init -> void
+Syphon.NET.SyphonClientOptions.Equals(Syphon.NET.SyphonClientOptions? other) -> bool
+Syphon.NET.SyphonClientOptions.LoggerFactory.get -> Microsoft.Extensions.Logging.ILoggerFactory?
+Syphon.NET.SyphonClientOptions.LoggerFactory.init -> void
+Syphon.NET.SyphonClientOptions.SyphonClientOptions() -> void
+Syphon.NET.SyphonException
+Syphon.NET.SyphonException.SyphonException() -> void
+Syphon.NET.SyphonException.SyphonException(string! message) -> void
+Syphon.NET.SyphonException.SyphonException(string! message, System.Exception! innerException) -> void
+Syphon.NET.SyphonFrame
+Syphon.NET.SyphonFrame.CopyPixelsTo(System.Span<byte> destination) -> int
+Syphon.NET.SyphonFrame.CreateTexture(Metal.IMTLDevice! device) -> Metal.IMTLTexture!
+Syphon.NET.SyphonFrame.Dispose() -> void
+Syphon.NET.SyphonFrame.FrameNumber.get -> long
+Syphon.NET.SyphonFrame.Height.get -> int
+Syphon.NET.SyphonFrame.IsNew.get -> bool
+Syphon.NET.SyphonFrame.ObservedAtNanoseconds.get -> long
+Syphon.NET.SyphonFrame.Retain() -> Syphon.NET.SyphonFrameLease!
+Syphon.NET.SyphonFrame.Surface.get -> IOSurface.IOSurface!
+Syphon.NET.SyphonFrame.SyphonFrame() -> void
+Syphon.NET.SyphonFrame.Width.get -> int
+Syphon.NET.SyphonFrameHandler
+Syphon.NET.SyphonFrameLease
+Syphon.NET.SyphonFrameLease.CopyPixelsTo(System.Span<byte> destination) -> int
+Syphon.NET.SyphonFrameLease.Dispose() -> void
+Syphon.NET.SyphonFrameLease.FrameNumber.get -> long
+Syphon.NET.SyphonFrameLease.Height.get -> int
+Syphon.NET.SyphonFrameLease.ObservedAtNanoseconds.get -> long
+Syphon.NET.SyphonFrameLease.Surface.get -> IOSurface.IOSurface!
+Syphon.NET.SyphonFrameLease.Width.get -> int
+Syphon.NET.SyphonMainLoop
+Syphon.NET.SyphonReceiveResult
+Syphon.NET.SyphonReceiveResult.NoFrame = 1 -> Syphon.NET.SyphonReceiveResult
+Syphon.NET.SyphonReceiveResult.Received = 0 -> Syphon.NET.SyphonReceiveResult
+Syphon.NET.SyphonReceiveResult.ServerRetired = 2 -> Syphon.NET.SyphonReceiveResult
+Syphon.NET.SyphonServer
+Syphon.NET.SyphonServer.BeginFrame(int width, int height) -> Syphon.NET.SyphonServerFrame
+Syphon.NET.SyphonServer.ClientsChanged -> System.EventHandler<bool>?
+Syphon.NET.SyphonServer.Description.get -> Syphon.NET.SyphonServerDescription!
+Syphon.NET.SyphonServer.Dispose() -> void
+Syphon.NET.SyphonServer.HasClients.get -> bool
+Syphon.NET.SyphonServer.Name.get -> string!
+Syphon.NET.SyphonServer.Name.set -> void
+Syphon.NET.SyphonServer.PublishPixels(System.ReadOnlySpan<byte> pixels, int width, int height, int stride = 0) -> void
+Syphon.NET.SyphonServer.PublishTexture(Metal.IMTLTexture! texture, Metal.IMTLCommandBuffer! commandBuffer, Metal.MTLRegion? region = null, bool flipped = false) -> void
+Syphon.NET.SyphonServer.Surface.get -> IOSurface.IOSurface?
+Syphon.NET.SyphonServer.SyphonServer(string? name = null, Syphon.NET.SyphonServerOptions? options = null) -> void
+Syphon.NET.SyphonServerDescription
+Syphon.NET.SyphonServerDescription.AppName.get -> string!
+Syphon.NET.SyphonServerDescription.Equals(Syphon.NET.SyphonServerDescription? other) -> bool
+Syphon.NET.SyphonServerDescription.Name.get -> string!
+Syphon.NET.SyphonServerDescription.SharesIOSurfaces.get -> bool
+Syphon.NET.SyphonServerDescription.ToPropertyList() -> byte[]!
+Syphon.NET.SyphonServerDescription.Uuid.get -> string!
+Syphon.NET.SyphonServerDirectory
+Syphon.NET.SyphonServerDirectory.Dispose() -> void
+Syphon.NET.SyphonServerDirectory.Refresh() -> void
+Syphon.NET.SyphonServerDirectory.ServerAnnounced -> System.EventHandler<Syphon.NET.SyphonServerDescription!>?
+Syphon.NET.SyphonServerDirectory.ServerRetired -> System.EventHandler<Syphon.NET.SyphonServerDescription!>?
+Syphon.NET.SyphonServerDirectory.Servers.get -> System.Collections.Immutable.ImmutableArray<Syphon.NET.SyphonServerDescription!>
+Syphon.NET.SyphonServerDirectory.ServerUpdated -> System.EventHandler<Syphon.NET.SyphonServerDescription!>?
+Syphon.NET.SyphonServerDirectory.SyphonServerDirectory(Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory = null, System.TimeProvider? timeProvider = null) -> void
+Syphon.NET.SyphonServerDirectory.WaitForServerAsync(System.Func<Syphon.NET.SyphonServerDescription!, bool>! match, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Syphon.NET.SyphonServerDescription!>!
+Syphon.NET.SyphonServerDirectory.WatchAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<System.Collections.Immutable.ImmutableArray<Syphon.NET.SyphonServerDescription!>>!
+Syphon.NET.SyphonServerFrame
+Syphon.NET.SyphonServerFrame.CreateTexture(Metal.IMTLDevice! device) -> Metal.IMTLTexture!
+Syphon.NET.SyphonServerFrame.Dispose() -> void
+Syphon.NET.SyphonServerFrame.Height.get -> int
+Syphon.NET.SyphonServerFrame.Publish() -> void
+Syphon.NET.SyphonServerFrame.Publish(Metal.IMTLSharedEvent! rendered, ulong value) -> void
+Syphon.NET.SyphonServerFrame.Surface.get -> IOSurface.IOSurface!
+Syphon.NET.SyphonServerFrame.SyphonServerFrame() -> void
+Syphon.NET.SyphonServerFrame.Width.get -> int
+Syphon.NET.SyphonServerOptions
+Syphon.NET.SyphonServerOptions.<Clone>$() -> Syphon.NET.SyphonServerOptions!
+Syphon.NET.SyphonServerOptions.Equals(Syphon.NET.SyphonServerOptions? other) -> bool
+Syphon.NET.SyphonServerOptions.IsPrivate.get -> bool
+Syphon.NET.SyphonServerOptions.IsPrivate.init -> void
+Syphon.NET.SyphonServerOptions.LoggerFactory.get -> Microsoft.Extensions.Logging.ILoggerFactory?
+Syphon.NET.SyphonServerOptions.LoggerFactory.init -> void
+Syphon.NET.SyphonServerOptions.SyphonServerOptions() -> void
+virtual Syphon.NET.SyphonFrameHandler.Invoke(in Syphon.NET.SyphonFrame frame) -> void
