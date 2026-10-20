@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using CoreFoundation;
 
 namespace Syphon.NET;
@@ -32,11 +33,9 @@ public static class SyphonMainLoop
     {
         ArgumentNullException.ThrowIfNull(work);
         RequireMainThread();
-        Task<int> task = Task.Run(work);
-        Serve(task);
-
-        // Completed by Serve; this only unwraps the result or rethrows the work's exception.
-        return task.GetAwaiter().GetResult();
+        int result = 0;
+        Serve(async () => result = await work().ConfigureAwait(false));
+        return result;
     }
 
     /// <summary>
@@ -48,11 +47,7 @@ public static class SyphonMainLoop
     {
         ArgumentNullException.ThrowIfNull(work);
         RequireMainThread();
-        Task task = Task.Run(work);
-        Serve(task);
-
-        // Completed by Serve; this only rethrows the work's exception.
-        task.GetAwaiter().GetResult();
+        Serve(work);
     }
 
     private static void RequireMainThread()
@@ -66,9 +61,23 @@ public static class SyphonMainLoop
     }
 
     // The work runs on the thread pool, so its awaits never resume on the main thread, which is busy
-    // serving the run loop until the work completes.
-    private static void Serve(Task task)
+    // serving the run loop until the work completes. Its exception comes back to the caller as thrown.
+    private static void Serve(Func<Task> work)
     {
+        ExceptionDispatchInfo? failure = null;
+        Task task = Task.Run(async () =>
+        {
+            try
+            {
+                await work().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                // Rethrown on the main thread below, with its original stack.
+                failure = ExceptionDispatchInfo.Capture(exception);
+            }
+        });
+
         CFRunLoop main = CFRunLoop.Main;
         _ = task.ContinueWith(
             _ =>
@@ -100,5 +109,7 @@ public static class SyphonMainLoop
         {
             keepAlive.Invalidate();
         }
+
+        failure?.Throw();
     }
 }
