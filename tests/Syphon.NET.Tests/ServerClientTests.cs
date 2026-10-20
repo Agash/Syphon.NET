@@ -1,4 +1,5 @@
 using Metal;
+using Syphon.NET.Protocol;
 
 namespace Syphon.NET.Tests;
 
@@ -365,6 +366,27 @@ public sealed class ServerClientTests
         _ = Assert.ThrowsExactly<ObjectDisposedException>(() =>
             server.PublishPixels(new byte[4], 1, 1)
         );
+    }
+
+    // A frame or retire message the messaging queue delivers as the client is disposed reaches it after
+    // its semaphore is gone. Delivered here after Dispose, which the queue's timing only sometimes
+    // produces: it must be a no-op, where it used to throw on that queue and end the process.
+    [TestMethod]
+    [DataRow("NewFrame")]
+    [DataRow("RetireServer")]
+    public async Task MessageAfterDispose_IsIgnored(string message)
+    {
+        using SyphonServer server = new(Frames.UniqueName("late"));
+        server.PublishPixels(Frames.Pattern(1, Width, Height), Width, Height);
+        SyphonClient client = new(server.Description);
+        await WaitUntilAsync(() => client.HasNewFrame);
+        bool retired = false;
+        client.ServerRetired += (_, _) => retired = true;
+
+        client.Dispose();
+        client.ConnectionForTest.DeliverForTest(Enum.Parse<ClientMessage>(message), null);
+
+        Assert.IsFalse(retired, "a disposed client raises nothing");
     }
 
     [TestMethod]

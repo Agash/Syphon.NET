@@ -36,10 +36,9 @@ internal static class MessageArchive
 // process, as the SDK's "info.v002.syphon.messaging" queue is.
 internal sealed class MessageReceiver : IDisposable
 {
-    private static readonly DispatchQueue s_queue = new(
-        "info.v002.syphon.messaging",
-        concurrent: false
-    );
+    private const string QueueLabel = "info.v002.syphon.messaging";
+
+    private static readonly DispatchQueue s_queue = new(QueueLabel, concurrent: false);
 
     private readonly CFMessagePort _port;
 
@@ -71,11 +70,21 @@ internal sealed class MessageReceiver : IDisposable
         return new MessageReceiver(port, callback);
     }
 
+    // The port is invalidated on its delivery queue, so when this returns no message is being handled
+    // and none follows; from a handler on that queue it is invalidated in place.
     public void Dispose()
     {
-        GC.KeepAlive(_callback);
-        _port.Invalidate();
+        if (DispatchQueue.CurrentQueueLabel == QueueLabel)
+        {
+            _port.Invalidate();
+        }
+        else
+        {
+            s_queue.DispatchSync(_port.Invalidate);
+        }
+
         _port.Dispose();
+        GC.KeepAlive(_callback);
     }
 }
 

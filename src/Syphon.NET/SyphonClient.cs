@@ -78,11 +78,11 @@ public sealed partial class SyphonClient : IDisposable
             _options.LoggerFactory ?? NullLoggerFactory.Instance
         ).CreateLogger<SyphonClient>();
         _connection = new ClientConnection(server.Uuid);
-        _connection.NewFrame += () => _frames.Release();
+        _connection.NewFrame += WakeReceiver;
         _connection.Retired += () =>
         {
             LogRetired(ServerName, server.Uuid);
-            _frames.Release();
+            WakeReceiver();
             ServerRetired?.Invoke(this, EventArgs.Empty);
         };
         _connection.Renamed += name =>
@@ -193,16 +193,22 @@ public sealed partial class SyphonClient : IDisposable
     /// <inheritdoc/>
     public void Dispose()
     {
-        if (_disposed)
-        {
-            return;
-        }
-
-        _disposed = true;
-        _connection.Dispose();
-        _frames.Dispose();
         lock (_gate)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+        }
+
+        // The connection stops its callbacks before it returns; one already past the disposed check
+        // above finds the semaphore under the same gate.
+        _connection.Dispose();
+        lock (_gate)
+        {
+            _frames.Dispose();
             while (_pool.TryPop(out IOSurface.IOSurface? surface))
             {
                 surface.Dispose();
@@ -210,6 +216,23 @@ public sealed partial class SyphonClient : IDisposable
         }
 
         _queue?.Dispose();
+    }
+
+    // For tests: the connection the server's messages arrive on.
+    internal ClientConnection ConnectionForTest => _connection;
+
+    // A frame or the server's retirement wakes a waiting receive. The connection calls back on its
+    // messaging queue and the retire notification on the main run loop, either of which can race a
+    // dispose on another thread; the gate keeps them off a disposed semaphore.
+    private void WakeReceiver()
+    {
+        lock (_gate)
+        {
+            if (!_disposed)
+            {
+                _ = _frames.Release();
+            }
+        }
     }
 
     internal void EndFrame(IOSurface.IOSurface surface)

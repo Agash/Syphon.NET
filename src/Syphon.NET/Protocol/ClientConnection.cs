@@ -22,6 +22,7 @@ internal sealed partial class ClientConnection : IDisposable
     private IOSurface.IOSurface? _surface;
     private long _frame;
     private bool _serverActive = true;
+    private bool _disposed;
     private readonly IDisposable _retirements;
 
     public ClientConnection(string serverUuid)
@@ -94,6 +95,12 @@ internal sealed partial class ClientConnection : IDisposable
         bool active;
         lock (_gate)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
             active = _serverActive;
             _serverActive = false;
             _surface?.Dispose();
@@ -113,6 +120,10 @@ internal sealed partial class ClientConnection : IDisposable
         _retirements.Dispose();
         _receiver.Dispose();
     }
+
+    // For tests: a message as the port delivers it on the messaging queue.
+    internal void DeliverForTest(ClientMessage type, NSObject? payload) =>
+        OnMessage((uint)type, payload);
 
     private IOSurface.IOSurface? SurfaceHavingLock()
     {
@@ -136,6 +147,11 @@ internal sealed partial class ClientConnection : IDisposable
             case ClientMessage.NewFrame:
                 lock (_gate)
                 {
+                    if (_disposed)
+                    {
+                        return;
+                    }
+
                     _frame++;
                 }
 
@@ -152,6 +168,14 @@ internal sealed partial class ClientConnection : IDisposable
 
                 break;
             case ClientMessage.UpdateServerName when payload is NSString name:
+                lock (_gate)
+                {
+                    if (_disposed)
+                    {
+                        return;
+                    }
+                }
+
                 Renamed?.Invoke(name);
                 break;
             case ClientMessage.RetireServer:
