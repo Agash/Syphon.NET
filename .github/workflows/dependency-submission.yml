@@ -34,8 +34,13 @@ jobs:
             10.0.x
             11.0.x
 
+      # The macOS packs require Xcode 27.0 exactly, and the image's default Xcode moves with image
+      # updates, so the job selects it by path.
+      - name: Select Xcode 27.0
+        run: echo "DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer" >> "$GITHUB_ENV"
+
       - name: Install the macOS workload
-        run: dotnet workload install macos --from-rollback-file .github/workloads.json
+        run: dotnet workload install macos
 
       - name: Restore
         # component-detection reads obj/project.assets.json; on a bare checkout it finds nothing and

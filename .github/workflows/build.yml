@@ -16,8 +16,7 @@ env:
 jobs:
   build_and_test:
     name: Build, Test, and Pack
-    # The macOS pack of the .NET 11 rc.2 workload requires Xcode 27.0, the default of the xcode-27 image.
-    runs-on: xcode-27
+        runs-on: xcode-27
 
     permissions:
       contents: read
@@ -30,7 +29,11 @@ jobs:
         with:
           fetch-depth: 0 # MinVer needs full history
 
-      # The image default, reported so the log names it.
+      # The macOS packs require Xcode 27.0 exactly, and the image's default Xcode moves with image
+      # updates, so the job selects it by path.
+      - name: Select Xcode 27.0
+        run: echo "DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer" >> "$GITHUB_ENV"
+      # Reported so the log names the Xcode in use.
       - name: Report selected Xcode
         run: |
           xcode-select -p
@@ -44,12 +47,9 @@ jobs:
             11.0.x
 
       # The net11.0-macos TFM requires the macos workload (NETSDK1147 otherwise).
-      # The manifests come from .github/workloads.json, taken from the 11.0.100-rc.2 workload set.
-      # A plain install resolves the whole set, whose Android manifest (37.2.0-rc.2.84) is missing
-      # from nuget.org. The packs require Xcode 27.0, the xcode-27 image's default.
       - name: Install macos workload
         run: |
-          dotnet workload install macos --from-rollback-file .github/workloads.json
+          dotnet workload install macos
 
       - uses: actions/setup-python@v7
         with:
