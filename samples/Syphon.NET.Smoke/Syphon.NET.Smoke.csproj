@@ -10,8 +10,7 @@
     <NoDSymUtil>true</NoDSymUtil>
     <IsPackable>false</IsPackable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <!-- A native executable ships no XML docs; this project's only feed IDE0005. The Compile-only AOT
-         publish (dotnet/sdk#54515) also never copies them into OutDir, where publish looks (MSB3030). -->
+    <!-- A native executable ships no XML docs; this project's only feed IDE0005. -->
     <PublishDocumentationFiles>false</PublishDocumentationFiles>
   </PropertyGroup>
   <ItemGroup>
