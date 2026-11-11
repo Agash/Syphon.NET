@@ -29,10 +29,10 @@ jobs:
         with:
           fetch-depth: 0 # MinVer needs full history
 
-      # The macOS packs require Xcode 27.0 exactly, and the image's default Xcode moves with image
+      # The macOS packs require Xcode 27.2 exactly, and the image's default Xcode moves with image
       # updates, so the job selects it by path.
-      - name: Select Xcode 27.0
-        run: echo "DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Select Xcode 27.2
+        run: echo "DEVELOPER_DIR=/Applications/Xcode_27.2.app/Contents/Developer" >> "$GITHUB_ENV"
       # Reported so the log names the Xcode in use.
       - name: Report selected Xcode
         run: |
